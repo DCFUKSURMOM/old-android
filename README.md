@@ -44,3 +44,6 @@ To build Android KitKat (4.4.4):
 * Run the lunch command for the target you want to build, for example "lunch generic_x86-userdebug" for the generic x86 target or "lunch full_x86-userdebug" for the generic x86 target + the Android emulator
 * Run "m -jX" (replace X with the number of CPU threads you want the build to use, higher number = faster build times)
 * If you build the full_x86-userdebug config you can run the "emulator" command to boot your KitKat build in an emulator after if finishes
+
+Screenshot of KitKat running in the emulator:
+<img width="799" height="561" alt="kitkat-emulator" src="https://github.com/user-attachments/assets/aa07bae6-5f7a-44b7-b801-43bb7b100d00" />
