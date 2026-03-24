@@ -13,3 +13,12 @@ A copy of the fixpath script will be included in this branch for anyone that wan
 Stock Gingerbread unfortunately does not seem to build properly, so some patches were pulled from https://github.com/CE1CECL/android
 
 Only required patches were applied to Gingerbread, with the exception of the patch for mouse support
+
+To build Gingerbread (2.3.7):
+
+* Chroot into the Ubuntu 12.04 install and run "su android"
+* switch to the home directory of the android user: "cd /home/android"
+* Clone the Gingerbread branch in the home directory in the Ubuntu chroot "git clone -b Gingerbread https://github.com/DCFUKSURMOM/old-android"
+* Switch to the old-android directory and run "source build/envsetup.sh"
+* run the lunch command for the target you want to build, for example "lunch generic_x86-userdebug" for the generic x86 target
+* run "m -jX" (replace X with the number of CPU threads you want the build to use, higher number = faster build times)
