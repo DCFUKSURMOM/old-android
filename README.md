@@ -10,6 +10,6 @@ The Ubuntu 12.04 install is 1.6G decompressed, and more will be needed for the A
 
 A copy of the fixpath script will be included in this branch for anyone that wants it, it assumes bash is present.
 
-Stock gingerbread unfortunately does not seem to build properly, so some patches were pulled from https://github.com/CE1CECL/android
+Stock Gingerbread unfortunately does not seem to build properly, so some patches were pulled from https://github.com/CE1CECL/android
 
 Only required patches were applied to Gingerbread, with the exception of the patch for mouse support
