@@ -14,11 +14,33 @@ Stock Gingerbread unfortunately does not seem to build properly, so some patches
 
 Only required patches were applied to Gingerbread, with the exception of the patch for mouse support
 
-To build Gingerbread (2.3.7):
+To build Android Gingerbread (2.3.7):
 
 * Chroot into the Ubuntu 12.04 install and run "su android"
-* switch to the home directory of the android user: "cd /home/android"
+* Switch to the home directory of the android user: "cd /home/android"
 * Clone the Gingerbread branch in the home directory in the Ubuntu chroot "git clone -b Gingerbread https://github.com/DCFUKSURMOM/old-android"
 * Switch to the old-android directory and run "source build/envsetup.sh"
-* run the lunch command for the target you want to build, for example "lunch generic_x86-userdebug" for the generic x86 target
-* run "m -jX" (replace X with the number of CPU threads you want the build to use, higher number = faster build times)
+* Run the lunch command for the target you want to build, for example "lunch generic_x86-userdebug" for the generic x86 target
+* Run "m -jX" (replace X with the number of CPU threads you want the build to use, higher number = faster build times)
+
+I'm not exactly sure how to test boot the finished Gingerbread build, there doesn't seem to be a real emulator target like there is in KitKat, source seems to build fine otherwise though..
+
+Maybe someone smarter (or more patient) than me can figure it out...
+
+Unfortunately GitHub has a size limit of 10G per repository, so I can't upload Android KitKat source here, stock KitKat builds just fine at least...
+
+To build Android KitKat (4.4.4):
+
+* Do not chroot into the Ubuntu 12.04 install yet
+* Make sure you have git and repo installed on your system, for Arch Linux based distros you can run "sudo pacman -S git repo" to install them
+* Switch to the android home directory in the chroot directory "cd /path/to/chroot/home/android"
+* Make a directory for the Android KitKat source "mkdir KitKat"
+* Switch to the KitKat directory "cd KitKat"
+* Run "repo init --partial-clone --no-use-superproject -b android-4.4.4_r2 -u https://android.googlesource.com/platform/manifest"
+* Run "repo sync -c -jX" (replace X with how many cpu threads you want it to use)
+* Chroot into the Ubuntu 12.04 install and run "su android"
+* switch to the home directory of the android user: "cd /home/android"
+* Switch to the old-android directory and run "source build/envsetup.sh"
+* Run the lunch command for the target you want to build, for example "lunch generic_x86-userdebug" for the generic x86 target or "lunch full_x86-userdebug" for the generic x86 target + the Android emulator
+* Run "m -jX" (replace X with the number of CPU threads you want the build to use, higher number = faster build times)
+* If you build the full_x86-userdebug config you can run the "emulator" command to boot your KitKat build in an emulator after if finishes
