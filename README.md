@@ -1,6 +1,6 @@
 Source code, premade build env, and documentation for building android Gingerbread
 
-ubuntu12androidbuild.tar.zst is a zstd compressed tarball of an barebones Ubuntu 12.04 install set up for building Android 2.3-4.4
+[ubuntu12androidbuild.tar.zst](http://dcfuksurmom.duckdns.org/funstuff/linux/android/ubuntu12androidbuild.tar.zst) is a zstd compressed tarball of an barebones Ubuntu 12.04 install set up for building Android 2.3-4.4
 
 I had some path issues when using arch-chroot to chroot into the install, so a workaround script is included.
 
