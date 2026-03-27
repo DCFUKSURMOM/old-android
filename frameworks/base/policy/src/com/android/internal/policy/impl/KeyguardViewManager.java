@@ -92,55 +92,10 @@ public class KeyguardViewManager implements KeyguardWindowController {
      * lazily.
      */
     public synchronized void show() {
-        if (DEBUG) Log.d(TAG, "show(); mKeyguardView==" + mKeyguardView);
-
-        if (mKeyguardHost == null) {
-            if (DEBUG) Log.d(TAG, "keyguard host is null, creating it...");
-
-            mKeyguardHost = new KeyguardViewHost(mContext, mCallback);
-
-            final int stretch = ViewGroup.LayoutParams.MATCH_PARENT;
-            int flags = WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN
-                    | WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER
-                    | WindowManager.LayoutParams.FLAG_KEEP_SURFACE_WHILE_ANIMATING
-                    /*| WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                    | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR*/ ;
-            if (!mNeedsInput) {
-                flags |= WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM;
-            }
-            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                    stretch, stretch, WindowManager.LayoutParams.TYPE_KEYGUARD,
-                    flags, PixelFormat.TRANSLUCENT);
-            lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;
-            lp.windowAnimations = com.android.internal.R.style.Animation_LockScreen;
-            lp.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_NOSENSOR;
-            lp.setTitle("Keyguard");
-            mWindowLayoutParams = lp;
-
-            mViewManager.addView(mKeyguardHost, lp);
-        }
-
-        if (mKeyguardView == null) {
-            if (DEBUG) Log.d(TAG, "keyguard view is null, creating it...");
-            mKeyguardView = mKeyguardViewProperties.createKeyguardView(mContext, mUpdateMonitor, this);
-            mKeyguardView.setId(R.id.lock_screen);
-            mKeyguardView.setCallback(mCallback);
-
-            final ViewGroup.LayoutParams lp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT);
-
-            mKeyguardHost.addView(mKeyguardView, lp);
-
-            if (mScreenOn) {
-                mKeyguardView.onScreenTurnedOn();
-            }
-        }
-
-        mKeyguardHost.setVisibility(View.VISIBLE);
-        mKeyguardView.requestFocus();
+        // DISABLED: Keyguard show completely disabled
+        if (DEBUG) Log.d(TAG, "show() - DISABLED");
+        return;
     }
-
     public void setNeedsInput(boolean needsInput) {
         mNeedsInput = needsInput;
         if (mWindowLayoutParams != null) {
@@ -212,30 +167,15 @@ public class KeyguardViewManager implements KeyguardWindowController {
      * Hides the keyguard view
      */
     public synchronized void hide() {
-        if (DEBUG) Log.d(TAG, "hide()");
-        if (mKeyguardHost != null) {
-            mKeyguardHost.setVisibility(View.GONE);
-            // Don't do this right away, so we can let the view continue to animate
-            // as it goes away.
-            if (mKeyguardView != null) {
-                final KeyguardViewBase lastView = mKeyguardView;
-                mKeyguardView = null;
-                mKeyguardHost.postDelayed(new Runnable() {
-                    public void run() {
-                        synchronized (KeyguardViewManager.this) {
-                            lastView.cleanUp();
-                            mKeyguardHost.removeView(lastView);
-                        }
-                    }
-                }, 500);
-            }
-        }
+        // DISABLED: Keyguard hide is a no-op
+        if (DEBUG) Log.d(TAG, "hide() - DISABLED");
+        return;
     }
 
     /**
      * @return Whether the keyguard is showing
      */
     public synchronized boolean isShowing() {
-        return (mKeyguardHost != null && mKeyguardHost.getVisibility() == View.VISIBLE);
+        return false; // Always report as not showing
     }
 }

@@ -443,7 +443,7 @@ public class KeyguardViewMediator implements KeyguardViewCallback,
      * Is the keyguard currently showing?
      */
     public boolean isShowing() {
-        return mShowing;
+        return false; // Always return false - keyguard disabled
     }
 
     /**
@@ -492,7 +492,7 @@ public class KeyguardViewMediator implements KeyguardViewCallback,
      * was suppressed by an app that disabled the keyguard or we haven't been provisioned yet.
      */
     public boolean isInputRestricted() {
-        return mShowing || mNeedToReshowWhenReenabled || !mUpdateMonitor.isDeviceProvisioned();
+        return false; // Input never restricted - keyguard disabled
     }
 
     /**
@@ -516,44 +516,9 @@ public class KeyguardViewMediator implements KeyguardViewCallback,
      */
     private void doKeyguard() {
         synchronized (this) {
-            // if another app is disabling us, don't show
-            if (!mExternallyEnabled) {
-                if (DEBUG) Log.d(TAG, "doKeyguard: not showing because externally disabled");
-
-                // note: we *should* set mNeedToReshowWhenReenabled=true here, but that makes
-                // for an occasional ugly flicker in this situation:
-                // 1) receive a call with the screen on (no keyguard) or make a call
-                // 2) screen times out
-                // 3) user hits key to turn screen back on
-                // instead, we reenable the keyguard when we know the screen is off and the call
-                // ends (see the broadcast receiver below)
-                // TODO: clean this up when we have better support at the window manager level
-                // for apps that wish to be on top of the keyguard
-                return;
-            }
-
-            // if the keyguard is already showing, don't bother
-            if (mKeyguardViewManager.isShowing()) {
-                if (DEBUG) Log.d(TAG, "doKeyguard: not showing because it is already showing");
-                return;
-            }
-
-            // if the setup wizard hasn't run yet, don't show
-            final boolean requireSim = !SystemProperties.getBoolean("keyguard.no_require_sim",
-                    false);
-            final boolean provisioned = mUpdateMonitor.isDeviceProvisioned();
-            final IccCard.State state = mUpdateMonitor.getSimState();
-            final boolean lockedOrMissing = state.isPinLocked()
-                    || ((state == IccCard.State.ABSENT) && requireSim);
-
-            if (!lockedOrMissing && !provisioned) {
-                if (DEBUG) Log.d(TAG, "doKeyguard: not showing because device isn't provisioned"
-                        + " and the sim is not locked or missing");
-                return;
-            }
-
-            if (DEBUG) Log.d(TAG, "doKeyguard: showing the lock screen");
-            showLocked();
+            // DISABLED: doKeyguard is completely disabled
+            if (DEBUG) Log.d(TAG, "doKeyguard() - DISABLED, returning without showing keyguard");
+            return;
         }
     }
 

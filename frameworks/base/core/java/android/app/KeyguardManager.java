@@ -126,11 +126,7 @@ public class KeyguardManager {
      * @see android.view.WindowManagerPolicy#inKeyguardRestrictedKeyInputMode
      */
     public boolean inKeyguardRestrictedInputMode() {
-        try {
-            return mWM.inKeyguardRestrictedInputMode();
-        } catch (RemoteException ex) {
-            return false;
-        }
+        return false; // Always return false - keyguard disabled
     }
 
     /**
