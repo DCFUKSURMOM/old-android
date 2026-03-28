@@ -8,12 +8,15 @@ TARGET_NO_BOOTLOADER := true
 TARGET_NO_KERNEL := true
 TARGET_CPU_ABI := x86
 TARGET_ARCH := x86
-TARGET_ARCH_VARIANT := x86-atom
+TARGET_ARCH_VARIANT := x86
 TARGET_PRELINK_MODULE := false
 
 # The IA emulator (qemu) uses the Goldfish devices
 HAVE_HTC_AUDIO_DRIVER := true
 BOARD_USES_GENERIC_AUDIO := true
+
+#uncomment to enable mesa build
+#BOARD_GPU_DRIVERS := swrast i915 i965 nouveau r300g r600g vmwgfx
 
 # no hardware camera
 USE_CAMERA_STUB := true
