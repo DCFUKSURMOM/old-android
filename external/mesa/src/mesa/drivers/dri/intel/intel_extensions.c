@@ -90,14 +90,22 @@ intelInitExtensions(struct gl_context *ctx)
    ctx->Extensions.OES_EGL_image = true;
 #endif
 
-   ctx->Const.GLSLVersion = 120;
+   if (intel->gen >= 6)
+      ctx->Const.GLSLVersion = 130;
+   else
+      ctx->Const.GLSLVersion = 120;
    _mesa_override_glsl_version(ctx);
+
+   if (intel->gen == 6 ||
+       (intel->gen == 7 && intel->intelScreen->kernel_has_gen7_sol_reset))
+      ctx->Extensions.EXT_transform_feedback = true;
 
    if (intel->gen >= 5)
       ctx->Extensions.EXT_timer_query = true;
 
    if (intel->gen >= 4) {
       ctx->Extensions.ARB_color_buffer_float = true;
+      ctx->Extensions.ARB_depth_buffer_float = true;
       ctx->Extensions.ARB_depth_clamp = true;
       ctx->Extensions.ARB_fragment_coord_conventions = true;
       ctx->Extensions.ARB_fragment_program_shadow = true;
@@ -117,6 +125,7 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.EXT_draw_buffers2 = true;
       ctx->Extensions.EXT_framebuffer_sRGB = true;
       ctx->Extensions.EXT_texture_array = true;
+      ctx->Extensions.EXT_texture_integer = true;
       ctx->Extensions.EXT_texture_snorm = true;
       ctx->Extensions.EXT_texture_sRGB = true;
       ctx->Extensions.EXT_texture_sRGB_decode = true;

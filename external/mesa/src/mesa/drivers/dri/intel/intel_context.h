@@ -30,6 +30,7 @@
 
 
 #include <stdbool.h>
+#include <string.h>
 #include "main/mtypes.h"
 #include "main/mm.h"
 
@@ -114,6 +115,8 @@ struct intel_sync_object {
    drm_intel_bo *bo;
 };
 
+struct brw_context;
+
 /**
  * intel_context is derived from Mesa's context class: struct gl_context.
  */
@@ -149,7 +152,8 @@ struct intel_context
       void (*assert_not_dirty) (struct intel_context *intel);
 
       void (*debug_batch)(struct intel_context *intel);
-      bool (*render_target_supported)(gl_format format);
+      bool (*render_target_supported)(struct intel_context *intel,
+				      struct gl_renderbuffer *rb);
 
       /** Can HiZ be enabled on a depthbuffer of the given format? */
       bool (*is_hiz_depth_format)(struct intel_context *intel,
@@ -164,12 +168,32 @@ struct intel_context
        *   - 7.5.3.3 Hierarchical Depth Buffer Resolve
        * \{
        */
-      void (*hiz_resolve_depthbuffer)(struct intel_context *intel,
-				      struct intel_region *depth_region);
-      void (*hiz_resolve_hizbuffer)(struct intel_context *intel,
-				    struct intel_region *depth_region);
+      void (*resolve_hiz_slice)(struct intel_context *intel,
+				struct intel_mipmap_tree *mt,
+				uint32_t level,
+				uint32_t layer);
+
+      void (*resolve_depth_slice)(struct intel_context *intel,
+				  struct intel_mipmap_tree *mt,
+				  uint32_t level,
+				  uint32_t layer);
       /** \} */
 
+      /**
+       * Surface state operations (i965+ only)
+       * \{
+       */
+      void (*update_texture_surface)(struct gl_context *ctx, unsigned unit);
+      void (*update_renderbuffer_surface)(struct brw_context *brw,
+					  struct gl_renderbuffer *rb,
+					  unsigned unit);
+      void (*update_null_renderbuffer_surface)(struct brw_context *brw,
+					       unsigned unit);
+      void (*create_constant_surface)(struct brw_context *brw,
+				      drm_intel_bo *bo,
+				      int width,
+				      uint32_t *out_offset);
+      /** \} */
    } vtbl;
 
    GLbitfield Fallback;  /**< mask of INTEL_FALLBACK_x bits */
@@ -189,6 +213,8 @@ struct intel_context
    bool has_separate_stencil;
    bool must_use_separate_stencil;
    bool has_hiz;
+   bool has_llc;
+   bool has_swizzling;
 
    int urb_size;
 
@@ -210,6 +236,7 @@ struct intel_context
 
       uint32_t state_batch_offset;
       bool is_blit;
+      bool needs_sol_reset;
 
       struct {
 	 uint16_t used;
@@ -258,7 +285,6 @@ struct intel_context
 
    bool hw_stencil;
    bool hw_stipple;
-   bool depth_buffer_is_float;
    bool no_rast;
    bool always_flush_batch;
    bool always_flush_cache;
@@ -484,7 +510,9 @@ extern bool intelInitContext(struct intel_context *intel,
 
 extern void intelFinish(struct gl_context * ctx);
 extern void intel_flush_rendering_to_batch(struct gl_context *ctx);
-extern void intel_flush(struct gl_context * ctx);
+extern void _intel_flush(struct gl_context * ctx, const char *file, int line);
+
+#define intel_flush(ctx) _intel_flush(ctx, __FILE__, __LINE__)
 
 extern void intelInitDriverFunctions(struct dd_function_table *functions);
 
@@ -565,6 +593,7 @@ void intel_prepare_render(struct intel_context *intel);
 
 void i915_set_buf_info_for_region(uint32_t *state, struct intel_region *region,
 				  uint32_t buffer_id);
+void intel_init_texture_formats(struct gl_context *ctx);
 
 /*======================================================================
  * Inline conversion functions.  

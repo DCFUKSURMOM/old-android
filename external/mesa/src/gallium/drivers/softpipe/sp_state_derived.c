@@ -88,7 +88,7 @@ softpipe_get_vertex_info(struct softpipe_context *softpipe)
       vinfo->num_attribs = 0;
       for (i = 0; i < fsInfo->num_inputs; i++) {
          int src;
-         enum interp_mode interp;
+         enum interp_mode interp = INTERP_LINEAR;
 
          switch (fsInfo->input_interpolate[i]) {
          case TGSI_INTERPOLATE_CONSTANT:
@@ -100,9 +100,11 @@ softpipe_get_vertex_info(struct softpipe_context *softpipe)
          case TGSI_INTERPOLATE_PERSPECTIVE:
             interp = INTERP_PERSPECTIVE;
             break;
+         case TGSI_INTERPOLATE_COLOR:
+            assert(fsInfo->input_semantic_name[i] == TGSI_SEMANTIC_COLOR);
+            break;
          default:
             assert(0);
-            interp = INTERP_LINEAR;
          }
 
          switch (fsInfo->input_semantic_name[i]) {
@@ -111,8 +113,11 @@ softpipe_get_vertex_info(struct softpipe_context *softpipe)
             break;
 
          case TGSI_SEMANTIC_COLOR:
-            if (softpipe->rasterizer->flatshade) {
-               interp = INTERP_CONSTANT;
+            if (fsInfo->input_interpolate[i] == TGSI_INTERPOLATE_COLOR) {
+               if (softpipe->rasterizer->flatshade)
+                  interp = INTERP_CONSTANT;
+               else
+                  interp = INTERP_PERSPECTIVE;
             }
             break;
          }
@@ -121,6 +126,11 @@ softpipe_get_vertex_info(struct softpipe_context *softpipe)
          src = draw_find_shader_output(softpipe->draw,
                                        fsInfo->input_semantic_name[i],
                                        fsInfo->input_semantic_index[i]);
+	 if (fsInfo->input_semantic_name[i] == TGSI_SEMANTIC_COLOR && src == 0)
+	   /* try and find a bcolor */
+	   src = draw_find_shader_output(softpipe->draw,
+					 TGSI_SEMANTIC_BCOLOR, fsInfo->input_semantic_index[i]);
+
          draw_emit_vertex_attr(vinfo, EMIT_4F, interp, src);
       }
 
@@ -295,9 +305,12 @@ update_polygon_stipple_pattern(struct softpipe_context *softpipe)
    tex = util_pstipple_create_stipple_texture(&softpipe->pipe,
                                               softpipe->poly_stipple.stipple);
    pipe_resource_reference(&softpipe->pstipple.texture, tex);
+   pipe_resource_reference(&tex, NULL);
 
-   view = util_pstipple_create_sampler_view(&softpipe->pipe, tex);
+   view = util_pstipple_create_sampler_view(&softpipe->pipe,
+                                            softpipe->pstipple.texture);
    pipe_sampler_view_reference(&softpipe->pstipple.sampler_view, view);
+   pipe_sampler_view_reference(&view, NULL);
 }
 
 

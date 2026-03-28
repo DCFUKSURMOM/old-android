@@ -461,7 +461,6 @@ struct nvc0_blitctx
       struct pipe_sampler_view *texture;
       struct nv50_tsc_entry *sampler;
       unsigned dirty;
-      unsigned clip_nr;
    } saved;
    struct nvc0_program vp;
    struct nvc0_program fp;
@@ -744,7 +743,8 @@ nvc0_blitctx_prepare_state(struct nvc0_blitctx *blit)
    IMMED_RING(chan, RING_3D(STENCIL_ENABLE), 0);
    IMMED_RING(chan, RING_3D(ALPHA_TEST_ENABLE), 0);
 
-   /* transform feedback ? */
+   /* disable transform feedback */
+   IMMED_RING(chan, RING_3D(TFB_ENABLE), 0);
 }
 
 static void
@@ -769,10 +769,6 @@ nvc0_blitctx_pre_blit(struct nvc0_blitctx *blit, struct nvc0_context *nvc0)
    nvc0->tctlprog = NULL;
    nvc0->tevlprog = NULL;
    nvc0->gmtyprog = NULL;
-
-   blit->saved.clip_nr = nvc0->clip.nr;
-
-   nvc0->clip.nr = 0;
 
    for (s = 0; s <= 4; ++s) {
       blit->saved.num_textures[s] = nvc0->num_textures[s];
@@ -814,8 +810,6 @@ nvc0_blitctx_post_blit(struct nvc0_context *nvc0, struct nvc0_blitctx *blit)
    nvc0->gmtyprog = blit->saved.gp;
    nvc0->fragprog = blit->saved.fp;
 
-   nvc0->clip.nr = blit->saved.clip_nr;
-
    pipe_sampler_view_reference(&nvc0->textures[4][0], NULL);
 
    for (s = 0; s <= 4; ++s) {
@@ -830,7 +824,8 @@ nvc0_blitctx_post_blit(struct nvc0_context *nvc0, struct nvc0_blitctx *blit)
        NVC0_NEW_RASTERIZER | NVC0_NEW_ZSA | NVC0_NEW_BLEND |
        NVC0_NEW_TEXTURES | NVC0_NEW_SAMPLERS |
        NVC0_NEW_VERTPROG | NVC0_NEW_FRAGPROG |
-       NVC0_NEW_TCTLPROG | NVC0_NEW_TEVLPROG | NVC0_NEW_GMTYPROG);
+       NVC0_NEW_TCTLPROG | NVC0_NEW_TEVLPROG | NVC0_NEW_GMTYPROG |
+       NVC0_NEW_TFB_TARGETS);
 }
 
 static void

@@ -71,6 +71,13 @@
 #include <stdint.h>
 #include <xf86drm.h>
 
+#ifndef RADEON_CHUNK_ID_FLAGS
+#define RADEON_CHUNK_ID_FLAGS	0x03
+
+/* The first dword of RADEON_CHUNK_ID_FLAGS is a uint32 of these flags: */
+#define RADEON_CS_KEEP_TILING_FLAGS 0x01
+#endif
+
 #define RELOC_DWORDS (sizeof(struct drm_radeon_cs_reloc) / sizeof(uint32_t))
 
 static boolean radeon_init_cs_context(struct radeon_cs_context *csc, int fd)
@@ -96,11 +103,14 @@ static boolean radeon_init_cs_context(struct radeon_cs_context *csc, int fd)
     csc->chunks[1].chunk_id = RADEON_CHUNK_ID_RELOCS;
     csc->chunks[1].length_dw = 0;
     csc->chunks[1].chunk_data = (uint64_t)(uintptr_t)csc->relocs;
+    csc->chunks[2].chunk_id = RADEON_CHUNK_ID_FLAGS;
+    csc->chunks[2].length_dw = 1;
+    csc->chunks[2].chunk_data = (uint64_t)(uintptr_t)&csc->flags;
 
     csc->chunk_array[0] = (uint64_t)(uintptr_t)&csc->chunks[0];
     csc->chunk_array[1] = (uint64_t)(uintptr_t)&csc->chunks[1];
+    csc->chunk_array[2] = (uint64_t)(uintptr_t)&csc->chunks[2];
 
-    csc->cs.num_chunks = 2;
     csc->cs.chunks = (uint64_t)(uintptr_t)csc->chunk_array;
     return TRUE;
 }
@@ -171,13 +181,14 @@ static struct radeon_winsys_cs *radeon_drm_cs_create(struct radeon_winsys *rws)
 #define OUT_CS(cs, value) (cs)->buf[(cs)->cdw++] = (value)
 
 static INLINE void update_reloc_domains(struct drm_radeon_cs_reloc *reloc,
-                                        enum radeon_bo_usage usage,
-                                        unsigned domains)
+                                        enum radeon_bo_domain rd,
+                                        enum radeon_bo_domain wd,
+                                        enum radeon_bo_domain *added_domains)
 {
-    if (usage & RADEON_USAGE_READ)
-        reloc->read_domains |= domains;
-    if (usage & RADEON_USAGE_WRITE)
-        reloc->write_domain |= domains;
+    *added_domains = (rd | wd) & ~(reloc->read_domains | reloc->write_domain);
+
+    reloc->read_domains |= rd;
+    reloc->write_domain |= wd;
 }
 
 int radeon_get_reloc(struct radeon_cs_context *csc, struct radeon_bo *bo)
@@ -199,7 +210,7 @@ int radeon_get_reloc(struct radeon_cs_context *csc, struct radeon_bo *bo)
             if (reloc->handle == bo->handle) {
                 /* Put this reloc in the hash list.
                  * This will prevent additional hash collisions if there are
-                 * several subsequent get_reloc calls of the same buffer.
+                 * several consecutive get_reloc calls for the same buffer.
                  *
                  * Example: Assuming buffers A,B,C collide in the hash list,
                  * the following sequence of relocs:
@@ -220,16 +231,19 @@ int radeon_get_reloc(struct radeon_cs_context *csc, struct radeon_bo *bo)
 static unsigned radeon_add_reloc(struct radeon_cs_context *csc,
                                  struct radeon_bo *bo,
                                  enum radeon_bo_usage usage,
-                                 unsigned *added_domains)
+                                 enum radeon_bo_domain domains,
+                                 enum radeon_bo_domain *added_domains)
 {
     struct drm_radeon_cs_reloc *reloc;
     unsigned i;
     unsigned hash = bo->handle & (sizeof(csc->is_handle_added)-1);
+    enum radeon_bo_domain rd = usage & RADEON_USAGE_READ ? domains : 0;
+    enum radeon_bo_domain wd = usage & RADEON_USAGE_WRITE ? domains : 0;
 
     if (csc->is_handle_added[hash]) {
         reloc = csc->relocs_hashlist[hash];
         if (reloc->handle == bo->handle) {
-            update_reloc_domains(reloc, usage, bo->reloc_domains);
+            update_reloc_domains(reloc, rd, wd, added_domains);
             return csc->reloc_indices_hashlist[hash];
         }
 
@@ -238,7 +252,7 @@ static unsigned radeon_add_reloc(struct radeon_cs_context *csc,
             --i;
             reloc = &csc->relocs[i];
             if (reloc->handle == bo->handle) {
-                update_reloc_domains(reloc, usage, bo->reloc_domains);
+                update_reloc_domains(reloc, rd, wd, added_domains);
 
                 csc->relocs_hashlist[hash] = reloc;
                 csc->reloc_indices_hashlist[hash] = i;
@@ -268,10 +282,8 @@ static unsigned radeon_add_reloc(struct radeon_cs_context *csc,
     p_atomic_inc(&bo->num_cs_references);
     reloc = &csc->relocs[csc->crelocs];
     reloc->handle = bo->handle;
-    if (usage & RADEON_USAGE_READ)
-        reloc->read_domains = bo->reloc_domains;
-    if (usage & RADEON_USAGE_WRITE)
-        reloc->write_domain = bo->reloc_domains;
+    reloc->read_domains = rd;
+    reloc->write_domain = wd;
     reloc->flags = 0;
 
     csc->is_handle_added[hash] = TRUE;
@@ -280,23 +292,24 @@ static unsigned radeon_add_reloc(struct radeon_cs_context *csc,
 
     csc->chunks[1].length_dw += RELOC_DWORDS;
 
-    *added_domains = bo->reloc_domains;
+    *added_domains = rd | wd;
     return csc->crelocs++;
 }
 
 static unsigned radeon_drm_cs_add_reloc(struct radeon_winsys_cs *rcs,
                                         struct radeon_winsys_cs_handle *buf,
-                                        enum radeon_bo_usage usage)
+                                        enum radeon_bo_usage usage,
+                                        enum radeon_bo_domain domains)
 {
     struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
     struct radeon_bo *bo = (struct radeon_bo*)buf;
-    unsigned added_domains = 0;
+    enum radeon_bo_domain added_domains;
 
-    unsigned index = radeon_add_reloc(cs->csc, bo, usage, &added_domains);
+    unsigned index = radeon_add_reloc(cs->csc, bo, usage, domains, &added_domains);
 
-    if (added_domains & RADEON_GEM_DOMAIN_GTT)
+    if (added_domains & RADEON_DOMAIN_GTT)
         cs->csc->used_gart += bo->base.size;
-    if (added_domains & RADEON_GEM_DOMAIN_VRAM)
+    if (added_domains & RADEON_DOMAIN_VRAM)
         cs->csc->used_vram += bo->base.size;
 
     return index;
@@ -425,6 +438,13 @@ static void radeon_drm_cs_flush(struct radeon_winsys_cs *rcs, unsigned flags)
         for (i = 0; i < crelocs; i++) {
             /* Update the number of active asynchronous CS ioctls for the buffer. */
             p_atomic_inc(&cs->cst->relocs_bo[i]->num_active_ioctls);
+        }
+
+        if (flags & RADEON_FLUSH_KEEP_TILING_FLAGS) {
+            cs->cst->cs.num_chunks = 3;
+            cs->cst->flags = RADEON_CS_KEEP_TILING_FLAGS;
+        } else {
+            cs->cst->cs.num_chunks = 2;
         }
 
         if (cs->thread &&

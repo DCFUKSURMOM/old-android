@@ -16,7 +16,9 @@ HAVE_HTC_AUDIO_DRIVER := true
 BOARD_USES_GENERIC_AUDIO := true
 
 #uncomment to enable mesa build
-#BOARD_GPU_DRIVERS := swrast i915 i965 nouveau r300g r600g vmwgfx
+#BOARD_GPU_DRIVERS := swrast
+#TARGET_HARDWARE_3D := true
+#BOARD_EGL_CFG ?= device/common/gpu/egl_mesa.cfg
 
 # no hardware camera
 USE_CAMERA_STUB := true

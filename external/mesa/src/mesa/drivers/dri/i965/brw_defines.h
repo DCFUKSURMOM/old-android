@@ -458,10 +458,11 @@
 #define BRW_SURFACE_MIN_LOD_MASK	INTEL_MASK(31, 28)
 
 /* Surface state DW5 */
-#define BRW_SURFACE_X_OFFSET_SHIFT	25
-#define BRW_SURFACE_X_OFFSET_MASK	INTEL_MASK(31, 25)
-#define BRW_SURFACE_Y_OFFSET_SHIFT	20
-#define BRW_SURFACE_Y_OFFSET_MASK	INTEL_MASK(23, 20)
+#define BRW_SURFACE_X_OFFSET_SHIFT		25
+#define BRW_SURFACE_X_OFFSET_MASK		INTEL_MASK(31, 25)
+#define BRW_SURFACE_VERTICAL_ALIGN_ENABLE	(1 << 24)
+#define BRW_SURFACE_Y_OFFSET_SHIFT		20
+#define BRW_SURFACE_Y_OFFSET_MASK		INTEL_MASK(23, 20)
 
 #define BRW_TEXCOORDMODE_WRAP            0
 #define BRW_TEXCOORDMODE_MIRROR          1
@@ -635,18 +636,20 @@ enum opcode {
    SHADER_OPCODE_INT_REMAINDER,
    SHADER_OPCODE_SIN,
    SHADER_OPCODE_COS,
+
+   SHADER_OPCODE_TEX,
+   SHADER_OPCODE_TXD,
+   SHADER_OPCODE_TXF,
+   SHADER_OPCODE_TXL,
+   SHADER_OPCODE_TXS,
+   FS_OPCODE_TXB,
+
    FS_OPCODE_DDX,
    FS_OPCODE_DDY,
    FS_OPCODE_PIXEL_X,
    FS_OPCODE_PIXEL_Y,
    FS_OPCODE_CINTERP,
    FS_OPCODE_LINTERP,
-   FS_OPCODE_TEX,
-   FS_OPCODE_TXB,
-   FS_OPCODE_TXD,
-   FS_OPCODE_TXF,
-   FS_OPCODE_TXL,
-   FS_OPCODE_TXS,
    FS_OPCODE_DISCARD,
    FS_OPCODE_SPILL,
    FS_OPCODE_UNSPILL,
@@ -796,6 +799,7 @@ enum brw_message_target {
 #define BRW_SAMPLER_MESSAGE_SIMD4X2_SAMPLE_COMPARE    0
 #define BRW_SAMPLER_MESSAGE_SIMD16_SAMPLE_COMPARE     2
 #define BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE_BIAS_COMPARE 0
+#define BRW_SAMPLER_MESSAGE_SIMD4X2_SAMPLE_LOD_COMPARE 1
 #define BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE_LOD_COMPARE  1
 #define BRW_SAMPLER_MESSAGE_SIMD4X2_RESINFO           2
 #define BRW_SAMPLER_MESSAGE_SIMD16_RESINFO            2
@@ -1074,6 +1078,9 @@ enum brw_message_target {
 # define GEN6_GS_SVBI_POSTINCREMENT_VALUE_MASK		INTEL_MASK(25, 16)
 # define GEN6_GS_ENABLE					(1 << 15)
 
+# define BRW_GS_EDGE_INDICATOR_0			(1 << 8)
+# define BRW_GS_EDGE_INDICATOR_1			(1 << 9)
+
 #define _3DSTATE_HS                             0x781B /* GEN7+ */
 #define _3DSTATE_TE                             0x781C /* GEN7+ */
 #define _3DSTATE_DS                             0x781D /* GEN7+ */
@@ -1121,6 +1128,7 @@ enum brw_message_target {
 /* DW1 (for gen6) */
 # define GEN6_SF_NUM_OUTPUTS_SHIFT			22
 # define GEN6_SF_SWIZZLE_ENABLE				(1 << 21)
+# define GEN6_SF_POINT_SPRITE_UPPERLEFT			(0 << 20)
 # define GEN6_SF_POINT_SPRITE_LOWERLEFT			(1 << 20)
 # define GEN6_SF_URB_ENTRY_READ_LENGTH_SHIFT		11
 # define GEN6_SF_URB_ENTRY_READ_OFFSET_SHIFT		4
@@ -1300,12 +1308,45 @@ enum brw_wm_barycentric_interp_mode {
 #define _3DSTATE_CONSTANT_HS                  0x7819 /* GEN7+ */
 #define _3DSTATE_CONSTANT_DS                  0x781A /* GEN7+ */
 
+#define _3DSTATE_STREAMOUT                    0x781e /* GEN7+ */
+/* DW1 */
+# define SO_FUNCTION_ENABLE				(1 << 31)
+# define SO_RENDERING_DISABLE				(1 << 30)
+/* This selects which incoming rendering stream goes down the pipeline.  The
+ * rendering stream is 0 if not defined by special cases in the GS state.
+ */
+# define SO_RENDER_STREAM_SELECT_SHIFT			27
+# define SO_RENDER_STREAM_SELECT_MASK			INTEL_MASK(28, 27)
+/* Controls reordering of TRISTRIP_* elements in stream output (not rendering).
+ */
+# define SO_REORDER_TRAILING				(1 << 26)
+/* Controls SO_NUM_PRIMS_WRITTEN_* and SO_PRIM_STORAGE_* */
+# define SO_STATISTICS_ENABLE				(1 << 25)
+# define SO_BUFFER_ENABLE(n)				(1 << (8 + (n)))
+/* DW2 */
+# define SO_STREAM_3_VERTEX_READ_OFFSET_SHIFT		29
+# define SO_STREAM_3_VERTEX_READ_OFFSET_MASK		INTEL_MASK(29, 29)
+# define SO_STREAM_3_VERTEX_READ_LENGTH_SHIFT		24
+# define SO_STREAM_3_VERTEX_READ_LENGTH_MASK		INTEL_MASK(28, 24)
+# define SO_STREAM_2_VERTEX_READ_OFFSET_SHIFT		21
+# define SO_STREAM_2_VERTEX_READ_OFFSET_MASK		INTEL_MASK(21, 21)
+# define SO_STREAM_2_VERTEX_READ_LENGTH_SHIFT		16
+# define SO_STREAM_2_VERTEX_READ_LENGTH_MASK		INTEL_MASK(20, 16)
+# define SO_STREAM_1_VERTEX_READ_OFFSET_SHIFT		13
+# define SO_STREAM_1_VERTEX_READ_OFFSET_MASK		INTEL_MASK(13, 13)
+# define SO_STREAM_1_VERTEX_READ_LENGTH_SHIFT		8
+# define SO_STREAM_1_VERTEX_READ_LENGTH_MASK		INTEL_MASK(12, 8)
+# define SO_STREAM_0_VERTEX_READ_OFFSET_SHIFT		5
+# define SO_STREAM_0_VERTEX_READ_OFFSET_MASK		INTEL_MASK(5, 5)
+# define SO_STREAM_0_VERTEX_READ_LENGTH_SHIFT		0
+# define SO_STREAM_0_VERTEX_READ_LENGTH_MASK		INTEL_MASK(4, 0)
+
 /* 3DSTATE_WM for Gen7 */
 /* DW1 */
 # define GEN7_WM_STATISTICS_ENABLE			(1 << 31)
 # define GEN7_WM_DEPTH_CLEAR				(1 << 30)
 # define GEN7_WM_DISPATCH_ENABLE			(1 << 29)
-# define GEN6_WM_DEPTH_RESOLVE				(1 << 28)
+# define GEN7_WM_DEPTH_RESOLVE				(1 << 28)
 # define GEN7_WM_HIERARCHICAL_DEPTH_RESOLVE		(1 << 27)
 # define GEN7_WM_KILL_ENABLE				(1 << 25)
 # define GEN7_WM_PSCDEPTH_OFF			        (0 << 23)
@@ -1366,8 +1407,6 @@ enum brw_wm_barycentric_interp_mode {
 /* DW6: kernel 1 pointer */
 /* DW7: kernel 2 pointer */
 
-#define _3DSTATE_STREAMOUT                      0x781e /* GEN7+ */
-
 #define _3DSTATE_SAMPLE_MASK			0x7818 /* GEN6+ */
 
 #define _3DSTATE_DRAWING_RECTANGLE		0x7900
@@ -1407,15 +1446,59 @@ enum brw_wm_barycentric_interp_mode {
 # define DEPTH_CLEAR_VALID				(1 << 15)
 /* DW1: depth clear value */
 
+#define _3DSTATE_SO_DECL_LIST			0x7917 /* GEN7+ */
+/* DW1 */
+# define SO_STREAM_TO_BUFFER_SELECTS_3_SHIFT		12
+# define SO_STREAM_TO_BUFFER_SELECTS_3_MASK		INTEL_MASK(15, 12)
+# define SO_STREAM_TO_BUFFER_SELECTS_2_SHIFT		8
+# define SO_STREAM_TO_BUFFER_SELECTS_2_MASK		INTEL_MASK(11, 8)
+# define SO_STREAM_TO_BUFFER_SELECTS_1_SHIFT		4
+# define SO_STREAM_TO_BUFFER_SELECTS_1_MASK		INTEL_MASK(7, 4)
+# define SO_STREAM_TO_BUFFER_SELECTS_0_SHIFT		0
+# define SO_STREAM_TO_BUFFER_SELECTS_0_MASK		INTEL_MASK(3, 0)
+/* DW2 */
+# define SO_NUM_ENTRIES_3_SHIFT				24
+# define SO_NUM_ENTRIES_3_MASK				INTEL_MASK(31, 24)
+# define SO_NUM_ENTRIES_2_SHIFT				16
+# define SO_NUM_ENTRIES_2_MASK				INTEL_MASK(23, 16)
+# define SO_NUM_ENTRIES_1_SHIFT				8
+# define SO_NUM_ENTRIES_1_MASK				INTEL_MASK(15, 8)
+# define SO_NUM_ENTRIES_0_SHIFT				0
+# define SO_NUM_ENTRIES_0_MASK				INTEL_MASK(7, 0)
+
+/* SO_DECL DW0 */
+# define SO_DECL_OUTPUT_BUFFER_SLOT_SHIFT		12
+# define SO_DECL_OUTPUT_BUFFER_SLOT_MASK		INTEL_MASK(13, 12)
+# define SO_DECL_HOLE_FLAG				(1 << 11)
+# define SO_DECL_REGISTER_INDEX_SHIFT			4
+# define SO_DECL_REGISTER_INDEX_MASK			INTEL_MASK(9, 4)
+# define SO_DECL_COMPONENT_MASK_SHIFT			0
+# define SO_DECL_COMPONENT_MASK_MASK			INTEL_MASK(3, 0)
+
+#define _3DSTATE_SO_BUFFER                    0x7918 /* GEN7+ */
+/* DW1 */
+# define SO_BUFFER_INDEX_SHIFT				29
+# define SO_BUFFER_INDEX_MASK				INTEL_MASK(30, 29)
+# define SO_BUFFER_PITCH_SHIFT				0
+# define SO_BUFFER_PITCH_MASK				INTEL_MASK(11, 0)
+/* DW2: start address */
+/* DW3: end address. */
+
 #define CMD_PIPE_CONTROL              0x7a00
 
 #define CMD_MI_FLUSH                  0x0200
 
 
-/* Various values from the R0 vertex header:
+/* Bitfields for the URB_WRITE message, DW2 of message header: */
+#define URB_WRITE_PRIM_END		0x1
+#define URB_WRITE_PRIM_START		0x2
+#define URB_WRITE_PRIM_TYPE_SHIFT	2
+
+
+/* Maximum number of entries that can be addressed using a binding table
+ * pointer of type SURFTYPE_BUFFER
  */
-#define R02_PRIM_END    0x1
-#define R02_PRIM_START  0x2
+#define BRW_MAX_NUM_BUFFER_ENTRIES	(1 << 27)
 
 #include "intel_chipset.h"
 

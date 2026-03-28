@@ -28,13 +28,19 @@ extern void
 _mesa_unpack_rgba_row(gl_format format, GLuint n,
                       const void *src, GLfloat dst[][4]);
 
+extern void
+_mesa_unpack_ubyte_rgba_row(gl_format format, GLuint n,
+                            const void *src, GLubyte dst[][4]);
+
+void
+_mesa_unpack_uint_rgba_row(gl_format format, GLuint n,
+                           const void *src, GLuint dst[][4]);
 
 extern void
 _mesa_unpack_rgba_block(gl_format format,
                         const void *src, GLint srcRowStride,
                         GLfloat dst[][4], GLint dstRowStride,
                         GLuint x, GLuint y, GLuint width, GLuint height);
-
 
 extern void
 _mesa_unpack_float_z_row(gl_format format, GLuint n,

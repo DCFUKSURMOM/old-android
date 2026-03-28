@@ -3,10 +3,7 @@ include $(TOP)/configs/current
 
 ##### MACROS #####
 
-XA_MAJOR = 0
-XA_MINOR = 4
-XA_TINY = 0
-XA_CFLAGS = -g -fPIC -Wall
+XA_CFLAGS = -Wall -pedantic
 
 XA_INCLUDES= -I$(TOP)/src/gallium/ \
 	-I$(TOP)/src/gallium/auxiliary \
@@ -32,7 +29,7 @@ OBJECTS = $(SOURCES:.c=.o)
 ##### RULES #####
 
 .c.o:
-	$(CC) -c $(XA_CFLAGS) $(XA_INCLUDES) $<
+	$(CC) -c $(XA_CFLAGS) $(CFLAGS) $(XA_INCLUDES) $<
 
 
 ##### TARGETS #####

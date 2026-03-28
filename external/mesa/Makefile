@@ -23,7 +23,7 @@ doxygen:
 
 check:
 	cd src/glsl/tests/ && ./optimization-test
-	@echo "All tests passed."
+	make -C tests check
 
 clean:
 	-@touch $(TOP)/configs/current
@@ -112,8 +112,6 @@ linux \
 linux-i965 \
 linux-alpha \
 linux-alpha-static \
-linux-cell \
-linux-cell-debug \
 linux-debug \
 linux-dri \
 linux-dri-debug \
@@ -186,19 +184,27 @@ ultrix-gcc:
 
 # Rules for making release tarballs
 
-PACKAGE_VERSION=7.12-devel
+PACKAGE_VERSION=8.0.2
 PACKAGE_DIR = Mesa-$(PACKAGE_VERSION)
 PACKAGE_NAME = MesaLib-$(PACKAGE_VERSION)
 
 EXTRA_FILES = \
 	aclocal.m4					\
 	configure					\
+	tests/Makefile.in				\
+	tests/glx/Makefile.in				\
 	src/glsl/glsl_parser.cpp			\
 	src/glsl/glsl_parser.h				\
 	src/glsl/glsl_lexer.cpp				\
 	src/glsl/glcpp/glcpp-lex.c			\
 	src/glsl/glcpp/glcpp-parse.c			\
 	src/glsl/glcpp/glcpp-parse.h			\
+	src/mesa/main/api_exec_es1.c			\
+	src/mesa/main/api_exec_es1_dispatch.h		\
+	src/mesa/main/api_exec_es1_remap_helper.h	\
+	src/mesa/main/api_exec_es2.c			\
+	src/mesa/main/api_exec_es2_dispatch.h		\
+	src/mesa/main/api_exec_es2_remap_helper.h	\
 	src/mesa/program/lex.yy.c			\
 	src/mesa/program/program_parse.tab.c		\
 	src/mesa/program/program_parse.tab.h

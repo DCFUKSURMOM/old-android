@@ -7,26 +7,10 @@ and auxiliary modules are shipped in the standard Gallium distribution.
 Drivers
 -------
 
-Cell
-^^^^
-
-Simple driver for the IBM Cell architecture. Runs faster than :ref:`softpipe`
-on Cell-based machines.
-
-Failover
-^^^^^^^^
-
-Broken and deprecated.
-
 Intel i915
 ^^^^^^^^^^
 
 Driver for Intel i915 and i945 chipsets.
-
-Intel i965
-^^^^^^^^^^
-
-Highly experimental driver for Intel i965 chipsets.
 
 Identity
 ^^^^^^^^

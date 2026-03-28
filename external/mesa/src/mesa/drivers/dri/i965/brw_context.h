@@ -119,6 +119,10 @@
 #define BRW_MAX_CURBE                    (32*16)
 
 struct brw_context;
+struct brw_instruction;
+struct brw_vs_prog_key;
+struct brw_wm_prog_key;
+struct brw_wm_prog_data;
 
 enum brw_state_id {
    BRW_STATE_URB_FENCE,
@@ -131,7 +135,7 @@ enum brw_state_id {
    BRW_STATE_CONTEXT,
    BRW_STATE_WM_INPUT_DIMENSIONS,
    BRW_STATE_PSP,
-   BRW_STATE_WM_SURFACES,
+   BRW_STATE_SURFACES,
    BRW_STATE_VS_BINDING_TABLE,
    BRW_STATE_GS_BINDING_TABLE,
    BRW_STATE_PS_BINDING_TABLE,
@@ -142,9 +146,9 @@ enum brw_state_id {
    BRW_STATE_NR_VS_SURFACES,
    BRW_STATE_INDEX_BUFFER,
    BRW_STATE_VS_CONSTBUF,
-   BRW_STATE_WM_CONSTBUF,
    BRW_STATE_PROGRAM_CACHE,
    BRW_STATE_STATE_BASE_ADDRESS,
+   BRW_STATE_SOL_INDICES,
 };
 
 #define BRW_NEW_URB_FENCE               (1 << BRW_STATE_URB_FENCE)
@@ -157,7 +161,7 @@ enum brw_state_id {
 #define BRW_NEW_CONTEXT                 (1 << BRW_STATE_CONTEXT)
 #define BRW_NEW_WM_INPUT_DIMENSIONS     (1 << BRW_STATE_WM_INPUT_DIMENSIONS)
 #define BRW_NEW_PSP                     (1 << BRW_STATE_PSP)
-#define BRW_NEW_WM_SURFACES		(1 << BRW_STATE_WM_SURFACES)
+#define BRW_NEW_SURFACES		(1 << BRW_STATE_SURFACES)
 #define BRW_NEW_VS_BINDING_TABLE	(1 << BRW_STATE_VS_BINDING_TABLE)
 #define BRW_NEW_GS_BINDING_TABLE	(1 << BRW_STATE_GS_BINDING_TABLE)
 #define BRW_NEW_PS_BINDING_TABLE	(1 << BRW_STATE_PS_BINDING_TABLE)
@@ -169,13 +173,11 @@ enum brw_state_id {
  */
 #define BRW_NEW_BATCH                  (1 << BRW_STATE_BATCH)
 /** \see brw.state.depth_region */
-#define BRW_NEW_NR_WM_SURFACES         (1 << BRW_STATE_NR_WM_SURFACES)
-#define BRW_NEW_NR_VS_SURFACES         (1 << BRW_STATE_NR_VS_SURFACES)
 #define BRW_NEW_INDEX_BUFFER           (1 << BRW_STATE_INDEX_BUFFER)
 #define BRW_NEW_VS_CONSTBUF            (1 << BRW_STATE_VS_CONSTBUF)
-#define BRW_NEW_WM_CONSTBUF            (1 << BRW_STATE_WM_CONSTBUF)
 #define BRW_NEW_PROGRAM_CACHE		(1 << BRW_STATE_PROGRAM_CACHE)
 #define BRW_NEW_STATE_BASE_ADDRESS	(1 << BRW_STATE_STATE_BASE_ADDRESS)
+#define BRW_NEW_SOL_INDICES		(1 << BRW_STATE_SOL_INDICES)
 
 struct brw_state_flags {
    /** State update flags signalled by mesa internals */
@@ -288,6 +290,12 @@ typedef enum
    BRW_VERT_RESULT_NDC = VERT_RESULT_MAX,
    BRW_VERT_RESULT_HPOS_DUPLICATE,
    BRW_VERT_RESULT_PAD,
+   /*
+    * It's actually not a vert_result but just a _mark_ to let sf aware that
+    * he need do something special to handle gl_PointCoord builtin variable
+    * correctly. see compile_sf_prog() for more info.
+    */
+   BRW_VERT_RESULT_PNTC,
    BRW_VERT_RESULT_MAX
 } brw_vert_result;
 
@@ -370,6 +378,12 @@ struct brw_clip_prog_data {
 struct brw_gs_prog_data {
    GLuint urb_read_length;
    GLuint total_grf;
+
+   /**
+    * Gen6 transform feedback: Amount by which the streaming vertex buffer
+    * indices should be incremented each time the GS is invoked.
+    */
+   unsigned svbi_postincrement_value;
 };
 
 struct brw_vs_prog_data {
@@ -381,7 +395,7 @@ struct brw_vs_prog_data {
    GLuint nr_pull_params; /**< number of dwords referenced by pull_param[] */
    GLuint total_scratch;
 
-   GLuint inputs_read;
+   GLbitfield64 inputs_read;
 
    /* Used for calculating urb partitions:
     */
@@ -391,6 +405,7 @@ struct brw_vs_prog_data {
    const float *pull_param[MAX_UNIFORMS * 4];
 
    bool uses_new_param_layout;
+   bool uses_vertexid;
 };
 
 
@@ -408,31 +423,82 @@ struct brw_vs_ouput_sizes {
 #define BRW_MAX_DRAW_BUFFERS 8
 
 /**
- * Size of our surface binding table for the WM.
- * This contains pointers to the drawing surfaces and current texture
- * objects and shader constant buffers (+2).
+ * Max number of binding table entries used for stream output.
+ *
+ * From the OpenGL 3.0 spec, table 6.44 (Transform Feedback State), the
+ * minimum value of MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS is 64.
+ *
+ * On Gen6, the size of transform feedback data is limited not by the number
+ * of components but by the number of binding table entries we set aside.  We
+ * use one binding table entry for a float, one entry for a vector, and one
+ * entry per matrix column.  Since the only way we can communicate our
+ * transform feedback capabilities to the client is via
+ * MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS, we need to plan for the
+ * worst case, in which all the varyings are floats, so we use up one binding
+ * table entry per component.  Therefore we need to set aside at least 64
+ * binding table entries for use by transform feedback.
+ *
+ * Note: since we don't currently pack varyings, it is currently impossible
+ * for the client to actually use up all of these binding table entries--if
+ * all of their varyings were floats, they would run out of varying slots and
+ * fail to link.  But that's a bug, so it seems prudent to go ahead and
+ * allocate the number of binding table entries we will need once the bug is
+ * fixed.
  */
-#define BRW_WM_MAX_SURF (BRW_MAX_DRAW_BUFFERS + BRW_MAX_TEX_UNIT + 1)
+#define BRW_MAX_SOL_BINDINGS 64
+
+/** Maximum number of actual buffers used for stream output */
+#define BRW_MAX_SOL_BUFFERS 4
 
 /**
- * Helpers to convert drawing buffers, textures and constant buffers
- * to surface binding table indexes, for WM.
+ * Helpers to create Surface Binding Table indexes for draw buffers,
+ * textures, and constant buffers.
+ *
+ * Shader threads access surfaces via numeric handles, rather than directly
+ * using pointers.  The binding table maps these numeric handles to the
+ * address of the actual buffer.
+ *
+ * For example, a shader might ask to sample from "surface 7."  In this case,
+ * bind[7] would contain a pointer to a texture.
+ *
+ * Although the hardware supports separate binding tables per pipeline stage
+ * (VS, HS, DS, GS, PS), we currently share a single binding table for all of
+ * them.  This is purely for convenience.
+ *
+ * Currently our binding tables are (arbitrarily) programmed as follows:
+ *
+ *    +-------------------------------+
+ *    |   0 | Draw buffer 0           | .
+ *    |   . |     .                   |  \
+ *    |   : |     :                   |   > Only relevant to the WM.
+ *    |   7 | Draw buffer 7           |  /
+ *    |-----|-------------------------| `
+ *    |   8 | VS Pull Constant Buffer |
+ *    |   9 | WM Pull Constant Buffer |
+ *    |-----|-------------------------|
+ *    |  10 | Texture 0               |
+ *    |   . |     .                   |
+ *    |   : |     :                   |
+ *    |  25 | Texture 15              |
+ *    +-----|-------------------------+
+ *    |  26 | SOL Binding 0           |
+ *    |   . |     .                   |
+ *    |   : |     :                   |
+ *    |  89 | SOL Binding 63          |
+ *    +-------------------------------+
+ *
+ * Note that nothing actually uses the SURF_INDEX_DRAW macro, so it has to be
+ * the identity function or things will break.  We do want to keep draw buffers
+ * first so we can use headerless render target writes for RT 0.
  */
 #define SURF_INDEX_DRAW(d)           (d)
-#define SURF_INDEX_FRAG_CONST_BUFFER (BRW_MAX_DRAW_BUFFERS) 
-#define SURF_INDEX_TEXTURE(t)        (BRW_MAX_DRAW_BUFFERS + 1 + (t))
+#define SURF_INDEX_VERT_CONST_BUFFER (BRW_MAX_DRAW_BUFFERS + 0)
+#define SURF_INDEX_FRAG_CONST_BUFFER (BRW_MAX_DRAW_BUFFERS + 1)
+#define SURF_INDEX_TEXTURE(t)        (BRW_MAX_DRAW_BUFFERS + 2 + (t))
+#define SURF_INDEX_SOL_BINDING(t)    (SURF_INDEX_TEXTURE(BRW_MAX_TEX_UNIT) + (t))
 
-/**
- * Size of surface binding table for the VS.
- * Only one constant buffer for now.
- */
-#define BRW_VS_MAX_SURF 1
-
-/**
- * Only a VS constant buffer
- */
-#define SURF_INDEX_VERT_CONST_BUFFER 0
-
+/** Maximum size of the binding table. */
+#define BRW_MAX_SURFACES SURF_INDEX_SOL_BINDING(BRW_MAX_SOL_BINDINGS)
 
 enum brw_cache_id {
    BRW_BLEND_STATE,
@@ -587,7 +653,7 @@ struct brw_context
    bool has_negative_rhw_bug;
    bool has_aa_line_parameters;
    bool has_pln;
-   bool new_vs_backend;
+   bool precompile;
 
    struct {
       struct brw_state_flags dirty;
@@ -691,6 +757,11 @@ struct brw_context
       GLuint sf_start;
       GLuint cs_start;
       GLuint size; /* Hardware URB size, in KB. */
+
+      /* gen6: True if the most recently sent _3DSTATE_URB message allocated
+       * URB space for the GS.
+       */
+      bool gen6_gs_previously_active;
    } urb;
 
    
@@ -727,6 +798,18 @@ struct brw_context
    } curbe;
 
    struct {
+      /** Binding table of pointers to surf_bo entries */
+      uint32_t bo_offset;
+      uint32_t surf_offset[BRW_MAX_SURFACES];
+   } bind;
+
+   /** SAMPLER_STATE count and offset */
+   struct {
+      GLuint count;
+      uint32_t offset;
+   } sampler;
+
+   struct {
       struct brw_vs_prog_data *prog_data;
       int8_t *constant_map; /* variable array following prog_data */
 
@@ -735,11 +818,6 @@ struct brw_context
       /** Offset in the program cache to the VS program */
       uint32_t prog_offset;
       uint32_t state_offset;
-
-      /** Binding table of pointers to surf_bo entries */
-      uint32_t bind_bo_offset;
-      uint32_t surf_offset[BRW_VS_MAX_SURF];
-      GLuint nr_surfaces;      
 
       uint32_t push_const_offset; /* Offset in the batchbuffer */
       int push_const_size; /* in 256-bit register increments */
@@ -810,19 +888,12 @@ struct brw_context
       uint32_t sdc_offset[BRW_MAX_TEX_UNIT];
 
       GLuint render_surf;
-      GLuint nr_surfaces;      
 
       drm_intel_bo *scratch_bo;
-
-      GLuint sampler_count;
-      uint32_t sampler_offset;
 
       /** Offset in the program cache to the WM program */
       uint32_t prog_offset;
 
-      /** Binding table of pointers to surf_bo entries */
-      uint32_t bind_bo_offset;
-      uint32_t surf_offset[BRW_WM_MAX_SURF];
       uint32_t state_offset; /* offset in batchbuffer to pre-gen6 WM state */
 
       drm_intel_bo *const_bo; /* pull constant buffer. */
@@ -885,6 +956,32 @@ struct brw_context
       enum state_struct_type type;
    } *state_batch_list;
    int state_batch_count;
+
+   /**
+    * \brief State needed to execute HiZ ops.
+    *
+    * \see gen6_hiz_init()
+    * \see gen6_hiz_exec()
+    */
+   struct brw_hiz_state {
+      /** \brief VBO for rectangle primitive.
+       *
+       * Rather than using glGenBuffers(), we allocate the VBO directly
+       * through drm.
+       */
+      drm_intel_bo *vertex_bo;
+   } hiz;
+
+   struct brw_sol_state {
+      uint32_t svbi_0_starting_index;
+      uint32_t svbi_0_max_index;
+      uint32_t offset_0_batch_start;
+      uint32_t primitives_generated;
+      uint32_t primitives_written;
+   } sol;
+
+   uint32_t render_target_format[MESA_FORMAT_COUNT];
+   bool format_supported_as_render_target[MESA_FORMAT_COUNT];
 };
 
 
@@ -964,9 +1061,30 @@ unsigned
 brw_compute_barycentric_interp_modes(bool shade_model_flat,
                                      const struct gl_fragment_program *fprog);
 
+/* brw_wm_surface_state.c */
+void brw_init_surface_formats(struct brw_context *brw);
+void
+brw_update_sol_surface(struct brw_context *brw,
+                       struct gl_buffer_object *buffer_obj,
+                       uint32_t *out_offset, unsigned num_vector_components,
+                       unsigned stride_dwords, unsigned offset_dwords);
+
 /* gen6_clip_state.c */
 bool
 brw_fprog_uses_noperspective(const struct gl_fragment_program *fprog);
+
+/* gen6_sol.c */
+void
+brw_begin_transform_feedback(struct gl_context *ctx, GLenum mode,
+			     struct gl_transform_feedback_object *obj);
+void
+brw_end_transform_feedback(struct gl_context *ctx,
+                           struct gl_transform_feedback_object *obj);
+
+/* gen7_sol_state.c */
+void
+gen7_end_transform_feedback(struct gl_context *ctx,
+			    struct gl_transform_feedback_object *obj);
 
 
 

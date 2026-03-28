@@ -80,7 +80,7 @@ gen6_upload_wm_push_constants(struct brw_context *brw)
    }
 }
 
-const struct brw_tracked_state gen6_wm_constants = {
+const struct brw_tracked_state gen6_wm_push_constants = {
    .dirty = {
       .mesa  = _NEW_PROGRAM_CONSTANTS,
       .brw   = (BRW_NEW_BATCH |
@@ -118,7 +118,7 @@ upload_wm_state(struct brw_context *brw)
 		GEN6_CONSTANT_BUFFER_0_ENABLE |
 		(5 - 2));
       /* Pointer to the WM constant buffer.  Covered by the set of
-       * state flags from gen6_upload_wm_constants
+       * state flags from gen6_upload_wm_push_constants.
        */
       OUT_BATCH(brw->wm.push_const_offset +
 		ALIGN(brw->wm.prog_data->nr_params,
@@ -135,16 +135,15 @@ upload_wm_state(struct brw_context *brw)
    dw5 |= GEN6_WM_LINE_END_CAP_AA_WIDTH_0_5;
 
    /* Use ALT floating point mode for ARB fragment programs, because they
-    * require 0^0 == 1.
+    * require 0^0 == 1.  Even though _CurrentFragmentProgram is used for
+    * rendering, CurrentFragmentProgram is used for this check to
+    * differentiate between the GLSL and non-GLSL cases.
     */
    if (ctx->Shader.CurrentFragmentProgram == NULL)
       dw2 |= GEN6_WM_FLOATING_POINT_MODE_ALT;
 
-   /* BRW_NEW_NR_WM_SURFACES */
-   dw2 |= brw->wm.nr_surfaces << GEN6_WM_BINDING_TABLE_ENTRY_COUNT_SHIFT;
-
    /* CACHE_NEW_SAMPLER */
-   dw2 |= (ALIGN(brw->wm.sampler_count, 4) / 4) << GEN6_WM_SAMPLER_COUNT_SHIFT;
+   dw2 |= (ALIGN(brw->sampler.count, 4) / 4) << GEN6_WM_SAMPLER_COUNT_SHIFT;
    dw4 |= (brw->wm.prog_data->first_curbe_grf <<
 	   GEN6_WM_DISPATCH_START_GRF_SHIFT_0);
    dw4 |= (brw->wm.prog_data->first_curbe_grf_16 <<
@@ -170,7 +169,7 @@ upload_wm_state(struct brw_context *brw)
       dw5 |= GEN6_WM_POLYGON_STIPPLE_ENABLE;
 
    /* BRW_NEW_FRAGMENT_PROGRAM */
-   if (fp->program.Base.InputsRead & (1 << FRAG_ATTRIB_WPOS))
+   if (fp->program.Base.InputsRead & FRAG_BIT_WPOS)
       dw5 |= GEN6_WM_USES_SOURCE_DEPTH | GEN6_WM_USES_SOURCE_W;
    if (fp->program.Base.OutputsWritten & BITFIELD64_BIT(FRAG_RESULT_DEPTH))
       dw5 |= GEN6_WM_COMPUTED_DEPTH;
@@ -217,8 +216,6 @@ const struct brw_tracked_state gen6_wm_state = {
 		_NEW_PROGRAM_CONSTANTS |
 		_NEW_POLYGON),
       .brw   = (BRW_NEW_FRAGMENT_PROGRAM |
-                BRW_NEW_NR_WM_SURFACES |
-		BRW_NEW_URB_FENCE |
 		BRW_NEW_BATCH),
       .cache = (CACHE_NEW_SAMPLER |
 		CACHE_NEW_WM_PROG)

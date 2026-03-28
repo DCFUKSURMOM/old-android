@@ -108,6 +108,7 @@ struct st_translate {
 /** Map Mesa's SYSTEM_VALUE_x to TGSI_SEMANTIC_x */
 static unsigned mesa_sysval_to_semantic[SYSTEM_VALUE_MAX] = {
    TGSI_SEMANTIC_FACE,
+   TGSI_SEMANTIC_VERTEXID,
    TGSI_SEMANTIC_INSTANCEID
 };
 
@@ -268,7 +269,7 @@ src_register( struct st_translate *t,
  * Map mesa texture target to TGSI texture target.
  */
 unsigned
-translate_texture_target( GLuint textarget,
+st_translate_texture_target( GLuint textarget,
                           GLboolean shadow )
 {
    if (shadow) {
@@ -278,6 +279,7 @@ translate_texture_target( GLuint textarget,
       case TEXTURE_RECT_INDEX: return TGSI_TEXTURE_SHADOWRECT;
       case TEXTURE_1D_ARRAY_INDEX: return TGSI_TEXTURE_SHADOW1D_ARRAY;
       case TEXTURE_2D_ARRAY_INDEX: return TGSI_TEXTURE_SHADOW2D_ARRAY;
+      case TEXTURE_CUBE_INDEX: return TGSI_TEXTURE_SHADOWCUBE;
       default: break;
       }
    }
@@ -514,7 +516,7 @@ static void emit_ddy( struct st_translate *t,
 
 
 
-unsigned
+static unsigned
 translate_opcode( unsigned op )
 {
    switch( op ) {
@@ -706,7 +708,7 @@ compile_instruction(
       ureg_tex_insn( ureg,
                      translate_opcode( inst->Opcode ),
                      dst, num_dst, 
-                     translate_texture_target( inst->TexSrcTarget,
+                     st_translate_texture_target( inst->TexSrcTarget,
                                                inst->TexShadow ),
                      NULL, 0,
                      src, num_src );

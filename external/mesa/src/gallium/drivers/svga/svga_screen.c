@@ -94,41 +94,53 @@ svga_get_name( struct pipe_screen *pscreen )
 
 
 static float
-svga_get_paramf(struct pipe_screen *screen, enum pipe_cap param)
+svga_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 {
    struct svga_screen *svgascreen = svga_screen(screen);
    struct svga_winsys_screen *sws = svgascreen->sws;
    SVGA3dDevCapResult result;
 
    switch (param) {
-   case PIPE_CAP_MAX_LINE_WIDTH:
+   case PIPE_CAPF_MAX_LINE_WIDTH:
       /* fall-through */
-   case PIPE_CAP_MAX_LINE_WIDTH_AA:
+   case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 7.0;
 
-   case PIPE_CAP_MAX_POINT_WIDTH:
+   case PIPE_CAPF_MAX_POINT_WIDTH:
       /* fall-through */
-   case PIPE_CAP_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
       /* Keep this to a reasonable size to avoid failures in
        * conform/pntaa.c:
        */
       return SVGA_MAX_POINTSIZE;
 
-   case PIPE_CAP_MAX_TEXTURE_ANISOTROPY:
+   case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       if(!sws->get_cap(sws, SVGA3D_DEVCAP_MAX_TEXTURE_ANISOTROPY, &result))
          return 4.0;
       return result.u;
 
-   case PIPE_CAP_MAX_TEXTURE_LOD_BIAS:
+   case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
       return 16.0;
 
+   default:
+      return 0;
+   }
+}
+
+
+static int
+svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
+{
+   struct svga_screen *svgascreen = svga_screen(screen);
+   struct svga_winsys_screen *sws = svgascreen->sws;
+   SVGA3dDevCapResult result;
+
+   switch (param) {
    case PIPE_CAP_MAX_COMBINED_SAMPLERS:
       return 16;
    case PIPE_CAP_NPOT_TEXTURES:
       return 1;
    case PIPE_CAP_TWO_SIDED_STENCIL:
-      return 1;
-   case PIPE_CAP_GLSL:
       return 1;
    case PIPE_CAP_ANISOTROPIC_FILTER:
       return 1;
@@ -173,8 +185,8 @@ svga_get_paramf(struct pipe_screen *screen, enum pipe_cap param)
        * No mechanism to query the host, and at least limited to 2048x2048 on
        * certain hardware.
        */
-      return MIN2(screen->get_paramf(screen, PIPE_CAP_MAX_TEXTURE_2D_LEVELS),
-                  12.0 /* 2048x2048 */);
+      return MIN2(screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_2D_LEVELS),
+                  12 /* 2048x2048 */);
 
    case PIPE_CAP_BLEND_EQUATION_SEPARATE: /* req. for GL 1.5 */
       return 1;
@@ -194,15 +206,6 @@ svga_get_paramf(struct pipe_screen *screen, enum pipe_cap param)
    default:
       return 0;
    }
-}
-
-
-/* This is a fairly pointless interface
- */
-static int
-svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
-{
-   return (int) svga_get_paramf( screen, param );
 }
 
 static int svga_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_shader_cap param)
@@ -232,7 +235,7 @@ static int svga_get_shader_param(struct pipe_screen *screen, unsigned shader, en
       case PIPE_SHADER_CAP_MAX_TEMPS:
          if (!sws->get_cap(sws, SVGA3D_DEVCAP_MAX_FRAGMENT_SHADER_TEMPS, &result))
             return 32;
-         return result.u;
+         return MIN2(result.u, SVGA3D_TEMPREG_MAX);
       case PIPE_SHADER_CAP_MAX_ADDRS:
       case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
 	 /* 
@@ -256,6 +259,8 @@ static int svga_get_shader_param(struct pipe_screen *screen, unsigned shader, en
          return 0;
       case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
          return 16;
+      case PIPE_SHADER_CAP_OUTPUT_READ:
+         return 0;
       }
       break;
    case PIPE_SHADER_VERTEX:
@@ -281,7 +286,7 @@ static int svga_get_shader_param(struct pipe_screen *screen, unsigned shader, en
       case PIPE_SHADER_CAP_MAX_TEMPS:
          if (!sws->get_cap(sws, SVGA3D_DEVCAP_MAX_VERTEX_SHADER_TEMPS, &result))
             return 32;
-         return result.u;
+         return MIN2(result.u, SVGA3D_TEMPREG_MAX);
       case PIPE_SHADER_CAP_MAX_ADDRS:
          return 1;
       case PIPE_SHADER_CAP_MAX_PREDS:
@@ -298,6 +303,8 @@ static int svga_get_shader_param(struct pipe_screen *screen, unsigned shader, en
       case PIPE_SHADER_CAP_SUBROUTINES:
          return 0;
       case PIPE_SHADER_CAP_INTEGERS:
+         return 0;
+      case PIPE_SHADER_CAP_OUTPUT_READ:
          return 0;
       default:
          break;

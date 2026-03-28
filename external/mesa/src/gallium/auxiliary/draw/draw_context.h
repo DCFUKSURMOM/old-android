@@ -50,9 +50,22 @@ struct draw_fragment_shader;
 struct tgsi_sampler;
 struct gallivm_state;
 
-
+/*
+ * structure to contain driver internal information 
+ * for stream out support. mapping stores the pointer
+ * to the buffer contents, and internal offset stores
+ * stores an internal counter to how much of the stream
+ * out buffer is used (in bytes).
+ */
+struct draw_so_target {
+   struct pipe_stream_output_target target;
+   void *mapping;
+   int internal_offset;
+};
 
 struct draw_context *draw_create( struct pipe_context *pipe );
+
+struct draw_context *draw_create_no_llvm(struct pipe_context *pipe);
 
 struct draw_context *
 draw_create_gallivm(struct pipe_context *pipe, struct gallivm_state *gallivm);
@@ -67,6 +80,21 @@ void draw_set_viewport_state( struct draw_context *draw,
 void draw_set_clip_state( struct draw_context *pipe,
                           const struct pipe_clip_state *clip );
 
+/**
+ * Sets the rasterization state used by the draw module.
+ * The rast_handle is used to pass the driver specific representation
+ * of the rasterization state. It's going to be used when the
+ * draw module sets the state back on the driver itself using the
+ * pipe::bind_rasterizer_state method.
+ *
+ * NOTE: if you're calling this function from within the pipe's
+ * bind_rasterizer_state you should always call it before binding
+ * the actual state - that's because the draw module can try to
+ * bind its own rasterizer state which would reset your newly
+ * set state. i.e. always do
+ * draw_set_rasterizer_state(driver->draw, state->pipe_state, state);
+ * driver->state.raster = state;
+ */
 void draw_set_rasterizer_state( struct draw_context *draw,
                                 const struct pipe_rasterizer_state *raster,
                                 void *rast_handle );
@@ -200,9 +228,15 @@ void
 draw_set_mapped_so_buffers(struct draw_context *draw,
                            void *buffers[PIPE_MAX_SO_BUFFERS],
                            unsigned num_buffers);
+
+void
+draw_set_mapped_so_targets(struct draw_context *draw,
+                           int num_targets,
+                           struct draw_so_target *targets[PIPE_MAX_SO_BUFFERS]);
+
 void
 draw_set_so_state(struct draw_context *draw,
-                  struct pipe_stream_output_state *state);
+                  struct pipe_stream_output_info *state);
 
 
 /***********************************************************************

@@ -94,7 +94,6 @@ struct blitter_context
    struct pipe_framebuffer_state saved_fb_state;  /**< framebuffer state */
    struct pipe_stencil_ref saved_stencil_ref;     /**< stencil ref */
    struct pipe_viewport_state saved_viewport;
-   struct pipe_clip_state saved_clip;
 
    int saved_num_sampler_states;
    void *saved_sampler_states[PIPE_MAX_SAMPLERS];
@@ -104,6 +103,9 @@ struct blitter_context
 
    int saved_num_vertex_buffers;
    struct pipe_vertex_buffer saved_vertex_buffers[PIPE_MAX_ATTRIBS];
+
+   int saved_num_so_targets;
+   struct pipe_stream_output_target *saved_so_targets[PIPE_MAX_SO_BUFFERS];
 };
 
 /**
@@ -131,6 +133,7 @@ struct pipe_context *util_blitter_get_pipe(struct blitter_context *blitter)
  * - vertex elements
  * - vertex shader
  * - geometry shader (if supported)
+ * - stream output targets (if supported)
  * - rasterizer state
  */
 
@@ -212,6 +215,35 @@ void util_blitter_copy_texture_view(struct blitter_context *blitter,
                                     struct pipe_sampler_view *src,
                                     const struct pipe_box *srcbox,
                                     unsigned src_width0, unsigned src_height0);
+
+/**
+ * Helper function to initialize a view for copy_texture_view.
+ * The parameters must match copy_texture_view.
+ */
+void util_blitter_default_dst_texture(struct pipe_surface *dst_templ,
+                                      struct pipe_resource *dst,
+                                      unsigned dstlevel,
+                                      unsigned dstz,
+                                      const struct pipe_box *srcbox);
+
+/**
+ * Helper function to initialize a view for copy_texture_view.
+ * The parameters must match copy_texture_view.
+ */
+void util_blitter_default_src_texture(struct pipe_sampler_view *src_templ,
+                                      struct pipe_resource *src,
+                                      unsigned srclevel);
+
+/**
+ * Copy data from one buffer to another using the Stream Output functionality.
+ * Some alignment is required, otherwise software fallback is used.
+ */
+void util_blitter_copy_buffer(struct blitter_context *blitter,
+                              struct pipe_resource *dst,
+                              unsigned dstx,
+                              struct pipe_resource *src,
+                              unsigned srcx,
+                              unsigned size);
 
 /**
  * Clear a region of a (color) surface to a constant value.
@@ -332,13 +364,6 @@ void util_blitter_save_viewport(struct blitter_context *blitter,
 }
 
 static INLINE
-void util_blitter_save_clip(struct blitter_context *blitter,
-                            struct pipe_clip_state *state)
-{
-   blitter->saved_clip = *state;
-}
-
-static INLINE
 void util_blitter_save_fragment_sampler_states(
                   struct blitter_context *blitter,
                   int num_sampler_states,
@@ -377,6 +402,20 @@ util_blitter_save_vertex_buffers(struct blitter_context *blitter,
                             (unsigned*)&blitter->saved_num_vertex_buffers,
                             vertex_buffers,
                             num_vertex_buffers);
+}
+
+static INLINE void
+util_blitter_save_so_targets(struct blitter_context *blitter,
+                             int num_targets,
+                             struct pipe_stream_output_target **targets)
+{
+   unsigned i;
+   assert(num_targets <= Elements(blitter->saved_so_targets));
+
+   blitter->saved_num_so_targets = num_targets;
+   for (i = 0; i < num_targets; i++)
+      pipe_so_target_reference(&blitter->saved_so_targets[i],
+                               targets[i]);
 }
 
 #ifdef __cplusplus

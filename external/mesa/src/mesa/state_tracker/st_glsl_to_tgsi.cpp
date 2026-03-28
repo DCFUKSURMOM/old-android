@@ -53,7 +53,6 @@ extern "C" {
 #include "program/prog_optimize.h"
 #include "program/prog_print.h"
 #include "program/program.h"
-#include "program/prog_uniform.h"
 #include "program/prog_parameter.h"
 #include "program/sampler.h"
 
@@ -305,6 +304,7 @@ public:
    int samplers_used;
    bool indirect_addr_temps;
    bool indirect_addr_consts;
+   int num_clip_distances;
    
    int glsl_version;
    bool native_integers;
@@ -414,7 +414,6 @@ public:
 
    bool process_move_condition(ir_rvalue *ir);
 
-   void remove_output_reads(gl_register_file type);
    void simplify_cmp(void);
 
    void rename_temp_register(int index, int new_index);
@@ -665,6 +664,9 @@ glsl_to_tgsi_visitor::get_opcode(ir_instruction *ir, unsigned op,
       case3(SLT, ISLT, USLT);
       
       case2iu(ISHR, USHR);
+
+      case2fi(SSG, ISSG);
+      case3(ABS, IABS, IABS);
       
       default: break;
    }
@@ -1018,29 +1020,6 @@ glsl_to_tgsi_visitor::visit(ir_variable *ir)
 
       fp->OriginUpperLeft = ir->origin_upper_left;
       fp->PixelCenterInteger = ir->pixel_center_integer;
-
-   } else if (strcmp(ir->name, "gl_FragDepth") == 0) {
-      struct gl_fragment_program *fp = (struct gl_fragment_program *)this->prog;
-      switch (ir->depth_layout) {
-      case ir_depth_layout_none:
-         fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_NONE;
-         break;
-      case ir_depth_layout_any:
-         fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_ANY;
-         break;
-      case ir_depth_layout_greater:
-         fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_GREATER;
-         break;
-      case ir_depth_layout_less:
-         fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_LESS;
-         break;
-      case ir_depth_layout_unchanged:
-         fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_UNCHANGED;
-         break;
-      default:
-         assert(0);
-         break;
-      }
    }
 
    if (ir->mode == ir_var_uniform && strncmp(ir->name, "gl_", 3) == 0) {
@@ -1426,8 +1405,7 @@ glsl_to_tgsi_visitor::visit(ir_expression *ir)
       }
       break;
    case ir_unop_neg:
-      assert(result_dst.type == GLSL_TYPE_FLOAT || result_dst.type == GLSL_TYPE_INT);
-      if (result_dst.type == GLSL_TYPE_INT)
+      if (result_dst.type == GLSL_TYPE_INT || result_dst.type == GLSL_TYPE_UINT)
          emit(ir, TGSI_OPCODE_INEG, result_dst, op[0]);
       else {
          op[0].negate = ~op[0].negate;
@@ -1435,7 +1413,6 @@ glsl_to_tgsi_visitor::visit(ir_expression *ir)
       }
       break;
    case ir_unop_abs:
-      assert(result_dst.type == GLSL_TYPE_FLOAT);
       emit(ir, TGSI_OPCODE_ABS, result_dst, op[0]);
       break;
    case ir_unop_sign:
@@ -1805,6 +1782,9 @@ glsl_to_tgsi_visitor::visit(ir_expression *ir)
    case ir_unop_floor:
       emit(ir, TGSI_OPCODE_FLR, result_dst, op[0]);
       break;
+   case ir_unop_round_even:
+      emit(ir, TGSI_OPCODE_ROUND, result_dst, op[0]);
+      break;
    case ir_unop_fract:
       emit(ir, TGSI_OPCODE_FRC, result_dst, op[0]);
       break;
@@ -1831,30 +1811,30 @@ glsl_to_tgsi_visitor::visit(ir_expression *ir)
       }
    case ir_binop_lshift:
       if (native_integers) {
-         emit(ir, TGSI_OPCODE_SHL, result_dst, op[0]);
+         emit(ir, TGSI_OPCODE_SHL, result_dst, op[0], op[1]);
          break;
       }
    case ir_binop_rshift:
       if (native_integers) {
-         emit(ir, TGSI_OPCODE_ISHR, result_dst, op[0]);
+         emit(ir, TGSI_OPCODE_ISHR, result_dst, op[0], op[1]);
          break;
       }
    case ir_binop_bit_and:
       if (native_integers) {
-         emit(ir, TGSI_OPCODE_AND, result_dst, op[0]);
+         emit(ir, TGSI_OPCODE_AND, result_dst, op[0], op[1]);
          break;
       }
    case ir_binop_bit_xor:
       if (native_integers) {
-         emit(ir, TGSI_OPCODE_XOR, result_dst, op[0]);
+         emit(ir, TGSI_OPCODE_XOR, result_dst, op[0], op[1]);
          break;
       }
    case ir_binop_bit_or:
       if (native_integers) {
-         emit(ir, TGSI_OPCODE_OR, result_dst, op[0]);
+         emit(ir, TGSI_OPCODE_OR, result_dst, op[0], op[1]);
          break;
       }
-   case ir_unop_round_even:
+
       assert(!"GLSL 1.30 features unsupported");
       break;
 
@@ -2396,7 +2376,7 @@ glsl_to_tgsi_visitor::visit(ir_constant *ir)
       gl_type = native_integers ? GL_BOOL : GL_FLOAT;
       for (i = 0; i < ir->type->vector_elements; i++) {
          if (native_integers)
-            values[i].b = ir->value.b[i];
+            values[i].u = ir->value.b[i] ? ~0 : 0;
          else
             values[i].f = ir->value.b[i];
       }
@@ -2666,8 +2646,9 @@ glsl_to_tgsi_visitor::visit(ir_texture *ir)
       ir->shadow_comparitor->accept(this);
 
       /* XXX This will need to be updated for cubemap array samplers. */
-      if (sampler_type->sampler_dimensionality == GLSL_SAMPLER_DIM_2D &&
-          sampler_type->sampler_array) {
+      if ((sampler_type->sampler_dimensionality == GLSL_SAMPLER_DIM_2D &&
+	   sampler_type->sampler_array) ||
+	  sampler_type->sampler_dimensionality == GLSL_SAMPLER_DIM_CUBE) {
          coord_dst.writemask = WRITEMASK_W;
       } else {
          coord_dst.writemask = WRITEMASK_Z;
@@ -2862,8 +2843,6 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
       if (is_tex_instruction(inst->op)) {
          v->samplers_used |= 1 << inst->sampler;
 
-         prog->SamplerTargets[inst->sampler] =
-            (gl_texture_index)inst->tex_target;
          if (inst->tex_shadow) {
             prog->ShadowSamplers |= 1 << inst->sampler;
          }
@@ -2871,57 +2850,10 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
    }
    
    prog->SamplersUsed = v->samplers_used;
-   _mesa_update_shader_textures_used(prog);
+
+   if (v->shader_program != NULL)
+      _mesa_update_shader_textures_used(v->shader_program, prog);
 }
-
-
-/**
- * Check if the given vertex/fragment/shader program is within the
- * resource limits of the context (number of texture units, etc).
- * If any of those checks fail, record a linker error.
- *
- * XXX more checks are needed...
- */
-static void
-check_resources(const struct gl_context *ctx,
-                struct gl_shader_program *shader_program,
-                glsl_to_tgsi_visitor *prog,
-                struct gl_program *proginfo)
-{
-   switch (proginfo->Target) {
-   case GL_VERTEX_PROGRAM_ARB:
-      if (_mesa_bitcount(prog->samplers_used) >
-          ctx->Const.MaxVertexTextureImageUnits) {
-         fail_link(shader_program, "Too many vertex shader texture samplers");
-      }
-      if (proginfo->Parameters->NumParameters > MAX_UNIFORMS) {
-         fail_link(shader_program, "Too many vertex shader constants");
-      }
-      break;
-   case MESA_GEOMETRY_PROGRAM:
-      if (_mesa_bitcount(prog->samplers_used) >
-          ctx->Const.MaxGeometryTextureImageUnits) {
-         fail_link(shader_program, "Too many geometry shader texture samplers");
-      }
-      if (proginfo->Parameters->NumParameters >
-          MAX_GEOMETRY_UNIFORM_COMPONENTS / 4) {
-         fail_link(shader_program, "Too many geometry shader constants");
-      }
-      break;
-   case GL_FRAGMENT_PROGRAM_ARB:
-      if (_mesa_bitcount(prog->samplers_used) >
-          ctx->Const.MaxTextureImageUnits) {
-         fail_link(shader_program, "Too many fragment shader texture samplers");
-      }
-      if (proginfo->Parameters->NumParameters > MAX_UNIFORMS) {
-         fail_link(shader_program, "Too many fragment shader constants");
-      }
-      break;
-   default:
-      _mesa_problem(ctx, "unexpected program type in check_resources()");
-   }
-}
-
 
 static void
 set_uniform_initializer(struct gl_context *ctx, void *mem_ctx,
@@ -2984,95 +2916,12 @@ set_uniform_initializer(struct gl_context *ctx, void *mem_ctx,
         		      element_type->matrix_columns,
         		      element_type->vector_elements,
         		      loc, 1, GL_FALSE, (GLfloat *)values);
-         loc += element_type->matrix_columns;
       } else {
          _mesa_uniform(ctx, shader_program, loc, element_type->matrix_columns,
         	       values, element_type->gl_type);
-         loc += type_size(element_type);
       }
-   }
-}
 
-/*
- * Scan/rewrite program to remove reads of custom (output) registers.
- * The passed type has to be either PROGRAM_OUTPUT or PROGRAM_VARYING
- * (for vertex shaders).
- * In GLSL shaders, varying vars can be read and written.
- * On some hardware, trying to read an output register causes trouble.
- * So, rewrite the program to use a temporary register in this case.
- * 
- * Based on _mesa_remove_output_reads from programopt.c.
- */
-void
-glsl_to_tgsi_visitor::remove_output_reads(gl_register_file type)
-{
-   GLuint i;
-   GLint outputMap[VERT_RESULT_MAX];
-   GLint outputTypes[VERT_RESULT_MAX];
-   GLuint numVaryingReads = 0;
-   GLboolean *usedTemps;
-   GLuint firstTemp = 0;
-
-   usedTemps = new GLboolean[MAX_TEMPS];
-   if (!usedTemps) {
-      return;
-   }
-   _mesa_find_used_registers(prog, PROGRAM_TEMPORARY,
-                             usedTemps, MAX_TEMPS);
-
-   assert(type == PROGRAM_VARYING || type == PROGRAM_OUTPUT);
-   assert(prog->Target == GL_VERTEX_PROGRAM_ARB || type != PROGRAM_VARYING);
-
-   for (i = 0; i < VERT_RESULT_MAX; i++)
-      outputMap[i] = -1;
-
-   /* look for instructions which read from varying vars */
-   foreach_iter(exec_list_iterator, iter, this->instructions) {
-      glsl_to_tgsi_instruction *inst = (glsl_to_tgsi_instruction *)iter.get();
-      const GLuint numSrc = num_inst_src_regs(inst->op);
-      GLuint j;
-      for (j = 0; j < numSrc; j++) {
-         if (inst->src[j].file == type) {
-            /* replace the read with a temp reg */
-            const GLuint var = inst->src[j].index;
-            if (outputMap[var] == -1) {
-               numVaryingReads++;
-               outputMap[var] = _mesa_find_free_register(usedTemps,
-                                                         MAX_TEMPS,
-                                                         firstTemp);
-               outputTypes[var] = inst->src[j].type;
-               firstTemp = outputMap[var] + 1;
-            }
-            inst->src[j].file = PROGRAM_TEMPORARY;
-            inst->src[j].index = outputMap[var];
-         }
-      }
-   }
-
-   delete [] usedTemps;
-
-   if (numVaryingReads == 0)
-      return; /* nothing to be done */
-
-   /* look for instructions which write to the varying vars identified above */
-   foreach_iter(exec_list_iterator, iter, this->instructions) {
-      glsl_to_tgsi_instruction *inst = (glsl_to_tgsi_instruction *)iter.get();
-      if (inst->dst.file == type && outputMap[inst->dst.index] >= 0) {
-         /* change inst to write to the temp reg, instead of the varying */
-         inst->dst.file = PROGRAM_TEMPORARY;
-         inst->dst.index = outputMap[inst->dst.index];
-      }
-   }
-   
-   /* insert new MOV instructions at the end */
-   for (i = 0; i < VERT_RESULT_MAX; i++) {
-      if (outputMap[i] >= 0) {
-         /* MOV VAR[i], TEMP[tmp]; */
-         st_src_reg src = st_src_reg(PROGRAM_TEMPORARY, outputMap[i], outputTypes[i]);
-         st_dst_reg dst = st_dst_reg(type, WRITEMASK_XYZW, outputTypes[i]);
-         dst.index = i;
-         this->emit(NULL, TGSI_OPCODE_MOV, dst, src);
-      }
+      loc++;
    }
 }
 
@@ -3129,7 +2978,7 @@ glsl_to_tgsi_visitor::simplify_cmp(void)
    if (!tempWrites) {
       return;
    }
-   memset(tempWrites, 0, sizeof(tempWrites));
+   memset(tempWrites, 0, sizeof(unsigned) * MAX_TEMPS);
    memset(outputWrites, 0, sizeof(outputWrites));
 
    foreach_iter(exec_list_iterator, iter, this->instructions) {
@@ -3578,34 +3427,37 @@ glsl_to_tgsi_visitor::eliminate_dead_code_advanced(void)
       switch (inst->op) {
       case TGSI_OPCODE_BGNLOOP:
       case TGSI_OPCODE_ENDLOOP:
+      case TGSI_OPCODE_CONT:
+      case TGSI_OPCODE_BRK:
          /* End of a basic block, clear the write array entirely.
-          * FIXME: This keeps us from killing dead code when the writes are
+          *
+          * This keeps us from killing dead code when the writes are
           * on either side of a loop, even when the register isn't touched
-          * inside the loop.
+          * inside the loop.  However, glsl_to_tgsi_visitor doesn't seem to emit
+          * dead code of this type, so it shouldn't make a difference as long as
+          * the dead code elimination pass in the GLSL compiler does its job.
           */
          memset(writes, 0, sizeof(*writes) * this->next_temp * 4);
          break;
 
       case TGSI_OPCODE_ENDIF:
-         --level;
-         break;
-
       case TGSI_OPCODE_ELSE:
-         /* Clear all channels written inside the preceding if block from the
-          * write array, but leave those that were not touched.
-          *
-          * FIXME: This destroys opportunities to remove dead code inside of
-          * IF blocks that are followed by an ELSE block.
+         /* Promote the recorded level of all channels written inside the
+          * preceding if or else block to the level above the if/else block.
           */
          for (int r = 0; r < this->next_temp; r++) {
             for (int c = 0; c < 4; c++) {
                if (!writes[4 * r + c])
         	         continue;
 
-               if (write_level[4 * r + c] >= level)
-        	         writes[4 * r + c] = NULL;
+               if (write_level[4 * r + c] == level)
+        	         write_level[4 * r + c] = level-1;
             }
          }
+
+         if(inst->op == TGSI_OPCODE_ENDIF)
+            --level;
+         
          break;
 
       case TGSI_OPCODE_IF:
@@ -3783,6 +3635,7 @@ get_pixel_transfer_visitor(struct st_fragment_program *fp,
    /* Copy attributes of the glsl_to_tgsi_visitor in the original shader. */
    v->ctx = original->ctx;
    v->prog = prog;
+   v->shader_program = NULL;
    v->glsl_version = original->glsl_version;
    v->native_integers = original->native_integers;
    v->options = original->options;
@@ -3804,7 +3657,7 @@ get_pixel_transfer_visitor(struct st_fragment_program *fp,
    inst->sampler = 0;
    inst->tex_target = TEXTURE_2D_INDEX;
 
-   prog->InputsRead |= (1 << FRAG_ATTRIB_TEX0);
+   prog->InputsRead |= FRAG_BIT_TEX0;
    prog->SamplersUsed |= (1 << 0); /* mark sampler 0 as used */
    v->samplers_used |= (1 << 0);
 
@@ -3861,6 +3714,7 @@ get_pixel_transfer_visitor(struct st_fragment_program *fp,
     * new visitor. */
    foreach_iter(exec_list_iterator, iter, original->instructions) {
       glsl_to_tgsi_instruction *inst = (glsl_to_tgsi_instruction *)iter.get();
+      glsl_to_tgsi_instruction *newinst;
       st_src_reg src_regs[3];
 
       if (inst->dst.file == PROGRAM_OUTPUT)
@@ -3875,10 +3729,11 @@ get_pixel_transfer_visitor(struct st_fragment_program *fp,
             src_regs[i].index = src0.index;
          }
          else if (src_regs[i].file == PROGRAM_INPUT)
-            prog->InputsRead |= (1 << src_regs[i].index);
+            prog->InputsRead |= BITFIELD64_BIT(src_regs[i].index);
       }
 
-      v->emit(NULL, inst->op, inst->dst, src_regs[0], src_regs[1], src_regs[2]);
+      newinst = v->emit(NULL, inst->op, inst->dst, src_regs[0], src_regs[1], src_regs[2]);
+      newinst->tex_target = inst->tex_target;
    }
 
    /* Make modifications to fragment program info. */
@@ -3910,6 +3765,7 @@ get_bitmap_visitor(struct st_fragment_program *fp,
    /* Copy attributes of the glsl_to_tgsi_visitor in the original shader. */
    v->ctx = original->ctx;
    v->prog = prog;
+   v->shader_program = NULL;
    v->glsl_version = original->glsl_version;
    v->native_integers = original->native_integers;
    v->options = original->options;
@@ -3928,7 +3784,7 @@ get_bitmap_visitor(struct st_fragment_program *fp,
    inst->sampler = samplerIndex;
    inst->tex_target = TEXTURE_2D_INDEX;
 
-   prog->InputsRead |= (1 << FRAG_ATTRIB_TEX0);
+   prog->InputsRead |= FRAG_BIT_TEX0;
    prog->SamplersUsed |= (1 << samplerIndex); /* mark sampler as used */
    v->samplers_used |= (1 << samplerIndex);
 
@@ -3942,6 +3798,7 @@ get_bitmap_visitor(struct st_fragment_program *fp,
     * new visitor. */
    foreach_iter(exec_list_iterator, iter, original->instructions) {
       glsl_to_tgsi_instruction *inst = (glsl_to_tgsi_instruction *)iter.get();
+      glsl_to_tgsi_instruction *newinst;
       st_src_reg src_regs[3];
 
       if (inst->dst.file == PROGRAM_OUTPUT)
@@ -3950,10 +3807,11 @@ get_bitmap_visitor(struct st_fragment_program *fp,
       for (int i=0; i<3; i++) {
          src_regs[i] = inst->src[i];
          if (src_regs[i].file == PROGRAM_INPUT)
-            prog->InputsRead |= (1 << src_regs[i].index);
+            prog->InputsRead |= BITFIELD64_BIT(src_regs[i].index);
       }
 
-      v->emit(NULL, inst->op, inst->dst, src_regs[0], src_regs[1], src_regs[2]);
+      newinst = v->emit(NULL, inst->op, inst->dst, src_regs[0], src_regs[1], src_regs[2]);
+      newinst->tex_target = inst->tex_target;
    }
 
    /* Make modifications to fragment program info. */
@@ -4016,6 +3874,7 @@ struct st_translate {
 /** Map Mesa's SYSTEM_VALUE_x to TGSI_SEMANTIC_x */
 static unsigned mesa_sysval_to_semantic[SYSTEM_VALUE_MAX] = {
    TGSI_SEMANTIC_FACE,
+   TGSI_SEMANTIC_VERTEXID,
    TGSI_SEMANTIC_INSTANCEID
 };
 
@@ -4323,7 +4182,7 @@ compile_tgsi_instruction(struct st_translate *t,
       ureg_tex_insn(ureg,
                     inst->op,
                     dst, num_dst, 
-                    translate_texture_target(inst->tex_target, inst->tex_shadow),
+                    st_translate_texture_target(inst->tex_target, inst->tex_shadow),
                     texoffsets, inst->tex_offset_num_offset,
                     src, num_src);
       return;
@@ -4620,6 +4479,15 @@ st_translate_program(
    t->pointSizeOutIndex = -1;
    t->prevInstWrotePointSize = GL_FALSE;
 
+   if (program->shader_program) {
+      for (i = 0; i < program->shader_program->NumUserUniformStorage; i++) {
+         struct gl_uniform_storage *const storage =
+               &program->shader_program->UniformStorage[i];
+
+         _mesa_uniform_detach_all_driver_storage(storage);
+      }
+   }
+
    /*
     * Declare input attributes.
     */
@@ -4692,9 +4560,17 @@ st_translate_program(
       }
 
       for (i = 0; i < numOutputs; i++) {
-         t->outputs[i] = ureg_DECL_output(ureg,
-                                          outputSemanticName[i],
-                                          outputSemanticIndex[i]);
+         if (outputSemanticName[i] == TGSI_SEMANTIC_CLIPDIST) {
+            int mask = ((1 << (program->num_clip_distances - 4*outputSemanticIndex[i])) - 1) & TGSI_WRITEMASK_XYZW;
+            t->outputs[i] = ureg_DECL_output_masked(ureg,
+                                                    outputSemanticName[i],
+                                                    outputSemanticIndex[i],
+                                                    mask);
+         } else {
+            t->outputs[i] = ureg_DECL_output(ureg,
+                                             outputSemanticName[i],
+                                             outputSemanticIndex[i]);
+         }
          if ((outputSemanticName[i] == TGSI_SEMANTIC_PSIZE) && proginfo->Id) {
             /* Writing to the point size result register requires special
              * handling to implement clamping.
@@ -4846,6 +4722,20 @@ st_translate_program(
                        t->insn[t->labels[i].branch_target]);
    }
 
+   if (program->shader_program) {
+      /* This has to be done last.  Any operation the can cause
+       * prog->ParameterValues to get reallocated (e.g., anything that adds a
+       * program constant) has to happen before creating this linkage.
+       */
+      for (unsigned i = 0; i < MESA_SHADER_TYPES; i++) {
+         if (program->shader_program->_LinkedShaders[i] == NULL)
+            continue;
+
+         _mesa_associate_uniform_storage(ctx, program->shader_program,
+               program->shader_program->_LinkedShaders[i]->Program->Parameters);
+      }
+   }
+
 out:
    if (t) {
       FREE(t->insn);
@@ -4871,10 +4761,13 @@ out:
 static struct gl_program *
 get_mesa_program(struct gl_context *ctx,
                  struct gl_shader_program *shader_program,
-        	 struct gl_shader *shader)
+                 struct gl_shader *shader,
+                 int num_clip_distances)
 {
    glsl_to_tgsi_visitor* v = new glsl_to_tgsi_visitor();
    struct gl_program *prog;
+   struct pipe_screen * screen = st_context(ctx)->pipe->screen;
+   unsigned pipe_shader_type;
    GLenum target;
    const char *target_string;
    bool progress;
@@ -4885,14 +4778,17 @@ get_mesa_program(struct gl_context *ctx,
    case GL_VERTEX_SHADER:
       target = GL_VERTEX_PROGRAM_ARB;
       target_string = "vertex";
+      pipe_shader_type = PIPE_SHADER_VERTEX;
       break;
    case GL_FRAGMENT_SHADER:
       target = GL_FRAGMENT_PROGRAM_ARB;
       target_string = "fragment";
+      pipe_shader_type = PIPE_SHADER_FRAGMENT;
       break;
    case GL_GEOMETRY_SHADER:
       target = GL_GEOMETRY_PROGRAM_NV;
       target_string = "geometry";
+      pipe_shader_type = PIPE_SHADER_GEOMETRY;
       break;
    default:
       assert(!"should not be reached");
@@ -4911,9 +4807,17 @@ get_mesa_program(struct gl_context *ctx,
    v->options = options;
    v->glsl_version = ctx->Const.GLSLVersion;
    v->native_integers = ctx->Const.NativeIntegers;
+   v->num_clip_distances = num_clip_distances;
 
    _mesa_generate_parameters_list_for_uniforms(shader_program, shader,
 					       prog->Parameters);
+
+   if (!screen->get_shader_param(screen, pipe_shader_type,
+                                 PIPE_SHADER_CAP_OUTPUT_READ)) {
+      /* Remove reads to output registers, and to varyings in vertex shaders. */
+      lower_output_reads(shader->ir);
+   }
+
 
    /* Emit intermediate IR for main(). */
    visit_exec_list(shader->ir, v);
@@ -4961,11 +4865,6 @@ get_mesa_program(struct gl_context *ctx,
    }
 #endif
 
-   /* Remove reads to output registers, and to varyings in vertex shaders. */
-   v->remove_output_reads(PROGRAM_OUTPUT);
-   if (target == GL_VERTEX_PROGRAM_ARB)
-      v->remove_output_reads(PROGRAM_VARYING);
-   
    /* Perform optimizations on the instructions in the glsl_to_tgsi_visitor. */
    v->simplify_cmp();
    v->copy_propagate();
@@ -4992,6 +4891,7 @@ get_mesa_program(struct gl_context *ctx,
       _mesa_print_ir(shader->ir, NULL);
       printf("\n");
       printf("\n");
+      fflush(stdout);
    }
 
    prog->Instructions = NULL;
@@ -5000,10 +4900,17 @@ get_mesa_program(struct gl_context *ctx,
    do_set_program_inouts(shader->ir, prog, shader->Type == GL_FRAGMENT_SHADER);
    count_resources(v, prog);
 
-   check_resources(ctx, shader_program, v, prog);
-
    _mesa_reference_program(ctx, &shader->Program, prog);
    
+   /* This has to be done last.  Any operation the can cause
+    * prog->ParameterValues to get reallocated (e.g., anything that adds a
+    * program constant) has to happen before creating this linkage.
+    */
+   _mesa_associate_uniform_storage(ctx, shader_program, prog->Parameters);
+   if (!shader_program->LinkStatus) {
+      return NULL;
+   }
+
    struct st_vertex_program *stvp;
    struct st_fragment_program *stfp;
    struct st_geometry_program *stgp;
@@ -5027,6 +4934,25 @@ get_mesa_program(struct gl_context *ctx,
    }
 
    return prog;
+}
+
+/**
+ * Searches through the IR for a declaration of gl_ClipDistance and returns the
+ * declared size of the gl_ClipDistance array.  Returns 0 if gl_ClipDistance is
+ * not declared in the IR.
+ */
+int get_clip_distance_size(exec_list *ir)
+{
+   foreach_iter (exec_list_iterator, iter, *ir) {
+      ir_instruction *inst = (ir_instruction *)iter.get();
+      ir_variable *var = inst->as_variable();
+      if (var == NULL) continue;
+      if (!strcmp(var->name, "gl_ClipDistance")) {
+         return var->type->length;
+      }
+   }
+   
+   return 0;
 }
 
 extern "C" {
@@ -5067,6 +4993,7 @@ st_new_shader_program(struct gl_context *ctx, GLuint name)
 GLboolean
 st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 {
+   int num_clip_distances[MESA_SHADER_TYPES];
    assert(prog->LinkStatus);
 
    for (unsigned i = 0; i < MESA_SHADER_TYPES; i++) {
@@ -5078,14 +5005,24 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       const struct gl_shader_compiler_options *options =
             &ctx->ShaderCompilerOptions[_mesa_shader_type_to_index(prog->_LinkedShaders[i]->Type)];
 
+      /* We have to determine the length of the gl_ClipDistance array before
+       * the array is lowered to two vec4s by lower_clip_distance().
+       */
+      num_clip_distances[i] = get_clip_distance_size(ir);
+
       do {
+         unsigned what_to_lower = MOD_TO_FRACT | DIV_TO_MUL_RCP |
+            EXP_TO_EXP2 | LOG_TO_LOG2;
+         if (options->EmitNoPow)
+            what_to_lower |= POW_TO_EXP2;
+         if (!ctx->Const.NativeIntegers)
+            what_to_lower |= INT_DIV_TO_MUL_RCP;
+
          progress = false;
 
          /* Lowering */
          do_mat_op_to_vec(ir);
-         lower_instructions(ir, (MOD_TO_FRACT | DIV_TO_MUL_RCP | EXP_TO_EXP2
-				 | LOG_TO_LOG2 | INT_DIV_TO_MUL_RCP
-        			 | ((options->EmitNoPow) ? POW_TO_EXP2 : 0)));
+         lower_instructions(ir, what_to_lower);
 
          progress = do_lower_jumps(ir, true, true, options->EmitNoMainReturn, options->EmitNoCont, options->EmitNoLoops) || progress;
 
@@ -5094,6 +5031,7 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 	   || progress;
 
          progress = lower_quadop_vector(ir, false) || progress;
+         progress = lower_clip_distance(ir) || progress;
 
          if (options->MaxIfDepth == 0)
             progress = lower_discard(ir) || progress;
@@ -5128,7 +5066,8 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       if (prog->_LinkedShaders[i] == NULL)
          continue;
 
-      linked_prog = get_mesa_program(ctx, prog, prog->_LinkedShaders[i]);
+      linked_prog = get_mesa_program(ctx, prog, prog->_LinkedShaders[i],
+                                     num_clip_distances[i]);
 
       if (linked_prog) {
 	 static const GLenum targets[] = {
@@ -5151,6 +5090,34 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
    }
 
    return GL_TRUE;
+}
+
+void
+st_translate_stream_output_info(glsl_to_tgsi_visitor *glsl_to_tgsi,
+                                const GLuint outputMapping[],
+                                struct pipe_stream_output_info *so)
+{
+   static unsigned comps_to_mask[] = {
+      0,
+      TGSI_WRITEMASK_X,
+      TGSI_WRITEMASK_XY,
+      TGSI_WRITEMASK_XYZ,
+      TGSI_WRITEMASK_XYZW
+   };
+   unsigned i;
+   struct gl_transform_feedback_info *info =
+      &glsl_to_tgsi->shader_program->LinkedTransformFeedback;
+
+   for (i = 0; i < info->NumOutputs; i++) {
+      assert(info->Outputs[i].NumComponents < Elements(comps_to_mask));
+      so->output[i].register_index =
+         outputMapping[info->Outputs[i].OutputRegister];
+      so->output[i].register_mask =
+         comps_to_mask[info->Outputs[i].NumComponents]
+         << info->Outputs[i].ComponentOffset;
+      so->output[i].output_buffer = info->Outputs[i].OutputBuffer;
+   }
+   so->num_outputs = info->NumOutputs;
 }
 
 } /* extern "C" */

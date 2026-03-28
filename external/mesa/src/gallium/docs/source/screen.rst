@@ -26,7 +26,6 @@ The integer capabilities:
   normalized coordinates, and mipmaps.
 * ``PIPE_CAP_TWO_SIDED_STENCIL``: Whether the stencil test can also affect back-facing
   polygons.
-* ``PIPE_CAP_GLSL``: Deprecated.
 * ``PIPE_CAP_DUAL_SOURCE_BLEND``: Whether dual-source blend factors are supported. See
   :ref:`Blend` for more information.
 * ``PIPE_CAP_ANISOTROPIC_FILTER``: Whether textures can be filtered anisotropically.
@@ -52,6 +51,8 @@ The integer capabilities:
   from color blend equations, in :ref:`Blend` state.
 * ``PIPE_CAP_SM3``: Whether the vertex shader and fragment shader support equivalent
   opcodes to the Shader Model 3 specification. XXX oh god this is horrible
+* ``PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS``: The maximum number of stream buffers.
+* ``PIPE_CAP_PRIMITIVE_RESTART``: Whether primitive restart is supported.
 * ``PIPE_CAP_MAX_COMBINED_SAMPLERS``: The total number of samplers accessible from
   the vertex and fragment shader, inclusive.
 * ``PIPE_CAP_INDEP_BLEND_ENABLE``: Whether per-rendertarget blend enabling and channel
@@ -74,20 +75,26 @@ The integer capabilities:
 * ``PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER``: Whether the TGSI
   property FS_COORD_PIXEL_CENTER with value INTEGER is supported.
 
-The floating-point capabilities:
 
-* ``PIPE_CAP_MAX_LINE_WIDTH``: The maximum width of a regular line.
-* ``PIPE_CAP_MAX_LINE_WIDTH_AA``: The maximum width of a smoothed line.
-* ``PIPE_CAP_MAX_POINT_WIDTH``: The maximum width and height of a point.
-* ``PIPE_CAP_MAX_POINT_WIDTH_AA``: The maximum width and height of a smoothed point.
-* ``PIPE_CAP_MAX_TEXTURE_ANISOTROPY``: The maximum level of anisotropy that can be
+.. _pipe_capf:
+
+PIPE_CAPF_*
+^^^^^^^^^^^^^^^^
+
+The floating-point capabilities are:
+
+* ``PIPE_CAPF_MAX_LINE_WIDTH``: The maximum width of a regular line.
+* ``PIPE_CAPF_MAX_LINE_WIDTH_AA``: The maximum width of a smoothed line.
+* ``PIPE_CAPF_MAX_POINT_WIDTH``: The maximum width and height of a point.
+* ``PIPE_CAPF_MAX_POINT_WIDTH_AA``: The maximum width and height of a smoothed point.
+* ``PIPE_CAPF_MAX_TEXTURE_ANISOTROPY``: The maximum level of anisotropy that can be
   applied to anisotropically filtered textures.
-* ``PIPE_CAP_MAX_TEXTURE_LOD_BIAS``: The maximum :term:`LOD` bias that may be applied
+* ``PIPE_CAPF_MAX_TEXTURE_LOD_BIAS``: The maximum :term:`LOD` bias that may be applied
   to filtered textures.
-* ``PIPE_CAP_GUARD_BAND_LEFT``,
-  ``PIPE_CAP_GUARD_BAND_TOP``,
-  ``PIPE_CAP_GUARD_BAND_RIGHT``,
-  ``PIPE_CAP_GUARD_BAND_BOTTOM``: TODO
+* ``PIPE_CAPF_GUARD_BAND_LEFT``,
+  ``PIPE_CAPF_GUARD_BAND_TOP``,
+  ``PIPE_CAPF_GUARD_BAND_RIGHT``,
+  ``PIPE_CAPF_GUARD_BAND_BOTTOM``: TODO
 
 
 .. _pipe_shader_cap:
@@ -174,6 +181,7 @@ resources might be created and handled quite differently.
 * ``PIPE_BIND_CONSTANT_BUFFER``: A buffer of shader constants.
 * ``PIPE_BIND_TRANSFER_WRITE``: A transfer object which will be written to.
 * ``PIPE_BIND_TRANSFER_READ``: A transfer object which will be read from.
+* ``PIPE_BIND_STREAM_OUTPUT``: A stream output buffer.
 * ``PIPE_BIND_CUSTOM``:
 * ``PIPE_BIND_SCANOUT``: A front color buffer or scanout buffer.
 * ``PIPE_BIND_SHARED``: A sharable buffer that can be given to another
@@ -191,20 +199,6 @@ The PIPE_USAGE enums are hints about the expected usage pattern of a resource.
 * ``PIPE_USAGE_STATIC``: Same as immutable (?)
 * ``PIPE_USAGE_IMMUTABLE``: Resource will not be changed after first upload.
 * ``PIPE_USAGE_STREAM``: Upload will be followed by draw, followed by upload, ...
-
-
-
-PIPE_TEXTURE_GEOM
-^^^^^^^^^^^^^^^^^
-
-These flags are used when querying whether a particular pipe_format is
-supported by the driver (with the `is_format_supported` function).
-Some formats may only be supported for certain kinds of textures.
-For example, a compressed format might only be used for POT textures.
-
-* ``PIPE_TEXTURE_GEOM_NON_SQUARE``: The texture may not be square
-* ``PIPE_TEXTURE_GEOM_NON_POWER_OF_TWO``: The texture dimensions may not be
-  powers of two.
 
 
 Methods

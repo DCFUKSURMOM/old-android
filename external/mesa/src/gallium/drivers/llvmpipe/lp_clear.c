@@ -36,6 +36,7 @@
 #include "lp_clear.h"
 #include "lp_context.h"
 #include "lp_setup.h"
+#include "lp_query.h"
 #include "lp_debug.h"
 
 
@@ -53,6 +54,9 @@ llvmpipe_clear(struct pipe_context *pipe,
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
 
    if (llvmpipe->no_rast)
+      return;
+
+   if (!llvmpipe_check_render_cond(llvmpipe))
       return;
 
    if (LP_PERF & PERF_NO_DEPTH)

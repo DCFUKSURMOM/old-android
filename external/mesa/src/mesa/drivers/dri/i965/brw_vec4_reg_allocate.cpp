@@ -87,9 +87,9 @@ vec4_visitor::reg_allocate_trivial()
       assign(hw_reg_mapping, &inst->src[2]);
    }
 
-   if (prog_data->total_grf > BRW_MAX_GRF) {
+   if (prog_data->total_grf > max_grf) {
       fail("Ran out of regs on trivial allocator (%d/%d)\n",
-	   prog_data->total_grf, BRW_MAX_GRF);
+	   prog_data->total_grf, max_grf);
    }
 }
 
@@ -108,7 +108,7 @@ brw_alloc_reg_set_for_classes(struct brw_context *brw,
    ralloc_free(brw->vs.ra_reg_to_grf);
    brw->vs.ra_reg_to_grf = ralloc_array(brw, uint8_t, ra_reg_count);
    ralloc_free(brw->vs.regs);
-   brw->vs.regs = ra_alloc_reg_set(ra_reg_count);
+   brw->vs.regs = ra_alloc_reg_set(brw, ra_reg_count);
    ralloc_free(brw->vs.classes);
    brw->vs.classes = ralloc_array(brw, int, class_count + 1);
 
@@ -144,7 +144,7 @@ vec4_visitor::reg_allocate()
 {
    int hw_reg_mapping[virtual_grf_count];
    int first_assigned_grf = this->first_non_payload_grf;
-   int base_reg_count = BRW_MAX_GRF - first_assigned_grf;
+   int base_reg_count = max_grf - first_assigned_grf;
    int class_sizes[base_reg_count];
    int class_count = 0;
 

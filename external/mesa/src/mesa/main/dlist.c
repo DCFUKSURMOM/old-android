@@ -40,14 +40,15 @@
 #endif
 #include "config.h"
 #include "mfeatures.h"
-#if FEATURE_ARB_vertex_buffer_object
 #include "bufferobj.h"
-#endif
 #include "arrayobj.h"
 #include "context.h"
 #include "dlist.h"
 #include "enums.h"
 #include "eval.h"
+#if FEATURE_EXT_framebuffer_object
+#include "fbobject.h"
+#endif
 #include "framebuffer.h"
 #include "glapi/glapi.h"
 #include "hash.h"
@@ -1422,7 +1423,7 @@ save_ClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value)
       }
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_ClearBufferiv(ctx->Exec, (buffer, drawbuffer, value));*/
+      CALL_ClearBufferiv(ctx->Exec, (buffer, drawbuffer, value));
    }
 }
 
@@ -1450,7 +1451,7 @@ save_ClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *value)
       }
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_ClearBufferuiv(ctx->Exec, (buffer, drawbuffer, value));*/
+      CALL_ClearBufferuiv(ctx->Exec, (buffer, drawbuffer, value));
    }
 }
 
@@ -1478,7 +1479,7 @@ save_ClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value)
       }
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_ClearBufferuiv(ctx->Exec, (buffer, drawbuffer, value));*/
+      CALL_ClearBufferfv(ctx->Exec, (buffer, drawbuffer, value));
    }
 }
 
@@ -1498,7 +1499,7 @@ save_ClearBufferfi(GLenum buffer, GLint drawbuffer,
       n[4].i = stencil;
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_ClearBufferfi(ctx->Exec, (buffer, drawbuffer, depth, stencil));*/
+      CALL_ClearBufferfi(ctx->Exec, (buffer, drawbuffer, depth, stencil));
    }
 }
 
@@ -7545,36 +7546,36 @@ execute_list(struct gl_context *ctx, GLuint list)
             break;
          case OPCODE_CLEAR_BUFFER_IV:
             {
-               /*GLint value[4];
+               GLint value[4];
                value[0] = n[3].i;
                value[1] = n[4].i;
                value[2] = n[5].i;
                value[3] = n[6].i;
-               CALL_ClearBufferiv(ctx->Exec, (n[1].e, n[2].i, value));*/
+               CALL_ClearBufferiv(ctx->Exec, (n[1].e, n[2].i, value));
             }
             break;
          case OPCODE_CLEAR_BUFFER_UIV:
             {
-               /*GLuint value[4];
+               GLuint value[4];
                value[0] = n[3].ui;
                value[1] = n[4].ui;
                value[2] = n[5].ui;
                value[3] = n[6].ui;
-               CALL_ClearBufferiv(ctx->Exec, (n[1].e, n[2].i, value));*/
+               CALL_ClearBufferuiv(ctx->Exec, (n[1].e, n[2].i, value));
             }
             break;
          case OPCODE_CLEAR_BUFFER_FV:
             {
-               /*GLfloat value[4];
+               GLfloat value[4];
                value[0] = n[3].f;
                value[1] = n[4].f;
                value[2] = n[5].f;
                value[3] = n[6].f;
-               CALL_ClearBufferfv(ctx->Exec, (n[1].e, n[2].i, value));*/
+               CALL_ClearBufferfv(ctx->Exec, (n[1].e, n[2].i, value));
             }
             break;
          case OPCODE_CLEAR_BUFFER_FI:
-            /*CALL_ClearBufferfi(ctx->Exec, (n[1].e, n[2].i, n[3].f, n[4].i));*/
+            CALL_ClearBufferfi(ctx->Exec, (n[1].e, n[2].i, n[3].f, n[4].i));
             break;
          case OPCODE_CLEAR_COLOR:
             CALL_ClearColor(ctx->Exec, (n[1].f, n[2].f, n[3].f, n[4].f));
@@ -10114,6 +10115,24 @@ _mesa_create_save_table(void)
    SET_GenVertexArraysAPPLE(table, _mesa_GenVertexArraysAPPLE);
    SET_IsVertexArrayAPPLE(table, _mesa_IsVertexArrayAPPLE);
 
+   /* 310. GL_EXT_framebuffer_object */
+   SET_GenFramebuffersEXT(table, _mesa_GenFramebuffersEXT);
+   SET_BindFramebufferEXT(table, _mesa_BindFramebufferEXT);
+   SET_DeleteFramebuffersEXT(table, _mesa_DeleteFramebuffersEXT);
+   SET_CheckFramebufferStatusEXT(table, _mesa_CheckFramebufferStatusEXT);
+   SET_GenRenderbuffersEXT(table, _mesa_GenRenderbuffersEXT);
+   SET_BindRenderbufferEXT(table, _mesa_BindRenderbufferEXT);
+   SET_DeleteRenderbuffersEXT(table, _mesa_DeleteRenderbuffersEXT);
+   SET_RenderbufferStorageEXT(table, _mesa_RenderbufferStorageEXT);
+   SET_FramebufferTexture1DEXT(table, _mesa_FramebufferTexture1DEXT);
+   SET_FramebufferTexture2DEXT(table, _mesa_FramebufferTexture2DEXT);
+   SET_FramebufferTexture3DEXT(table, _mesa_FramebufferTexture3DEXT);
+   SET_FramebufferRenderbufferEXT(table, _mesa_FramebufferRenderbufferEXT);
+   SET_GenerateMipmapEXT(table, _mesa_GenerateMipmapEXT);
+
+   /* 317. GL_EXT_framebuffer_multisample */
+   SET_RenderbufferStorageMultisample(table, _mesa_RenderbufferStorageMultisample);
+
    /* GL_ARB_vertex_array_object */
    SET_BindVertexArray(table, _mesa_BindVertexArray);
    SET_GenVertexArrays(table, _mesa_GenVertexArrays);
@@ -10184,7 +10203,6 @@ _mesa_create_save_table(void)
 #endif
 
    /* ARB 28. GL_ARB_vertex_buffer_object */
-#if FEATURE_ARB_vertex_buffer_object
    /* None of the extension's functions get compiled */
    SET_BindBufferARB(table, _mesa_BindBufferARB);
    SET_BufferDataARB(table, _mesa_BufferDataARB);
@@ -10197,7 +10215,6 @@ _mesa_create_save_table(void)
    SET_IsBufferARB(table, _mesa_IsBufferARB);
    SET_MapBufferARB(table, _mesa_MapBufferARB);
    SET_UnmapBufferARB(table, _mesa_UnmapBufferARB);
-#endif
 
 #if FEATURE_queryobj
    _mesa_init_queryobj_dispatch(table); /* glGetQuery, etc */

@@ -59,12 +59,11 @@ static void r600_blitter_begin(struct pipe_context *ctx, enum r600_blitter_op op
 	if (rctx->states[R600_PIPE_STATE_VIEWPORT]) {
 		util_blitter_save_viewport(rctx->blitter, &rctx->viewport);
 	}
-	if (rctx->states[R600_PIPE_STATE_CLIP]) {
-		util_blitter_save_clip(rctx->blitter, &rctx->clip);
-	}
 	util_blitter_save_vertex_buffers(rctx->blitter,
 					 rctx->vbuf_mgr->nr_vertex_buffers,
 					 rctx->vbuf_mgr->vertex_buffer);
+	util_blitter_save_so_targets(rctx->blitter, rctx->ctx.num_so_targets,
+				     (struct pipe_stream_output_target**)rctx->ctx.so_targets);
 
 	if (op & R600_SAVE_FRAMEBUFFER)
 		util_blitter_save_framebuffer(rctx->blitter, &rctx->framebuffer);
@@ -313,6 +312,8 @@ static void r600_resource_copy_region(struct pipe_context *ctx,
 	struct pipe_box sbox;
 	const struct pipe_box *psbox;
 	boolean restore_orig[2];
+
+	memset(orig_info, 0, sizeof(orig_info));
 
 	/* Fallback for buffers. */
 	if (dst->target == PIPE_BUFFER && src->target == PIPE_BUFFER) {

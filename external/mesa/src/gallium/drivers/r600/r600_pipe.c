@@ -47,33 +47,38 @@
 #include "r600_resource.h"
 #include "r600_shader.h"
 #include "r600_pipe.h"
+#include "r600_hw_context_priv.h"
 
 /*
  * pipe_context
  */
 static struct r600_fence *r600_create_fence(struct r600_pipe_context *ctx)
 {
+	struct r600_screen *rscreen = ctx->screen;
 	struct r600_fence *fence = NULL;
 
-	if (!ctx->fences.bo) {
+	pipe_mutex_lock(rscreen->fences.mutex);
+
+	if (!rscreen->fences.bo) {
 		/* Create the shared buffer object */
-		ctx->fences.bo = (struct r600_resource*)
-			pipe_buffer_create(&ctx->screen->screen, PIPE_BIND_CUSTOM,
+		rscreen->fences.bo = (struct r600_resource*)
+			pipe_buffer_create(&rscreen->screen, PIPE_BIND_CUSTOM,
 					   PIPE_USAGE_STAGING, 4096);
-		if (!ctx->fences.bo) {
+		if (!rscreen->fences.bo) {
 			R600_ERR("r600: failed to create bo for fence objects\n");
-			return NULL;
+			goto out;
 		}
-		ctx->fences.data = ctx->ws->buffer_map(ctx->fences.bo->buf, ctx->ctx.cs,
-						       PIPE_TRANSFER_WRITE);
+		rscreen->fences.data = ctx->ws->buffer_map(rscreen->fences.bo->buf,
+							   ctx->ctx.cs,
+							   PIPE_TRANSFER_READ_WRITE);
 	}
 
-	if (!LIST_IS_EMPTY(&ctx->fences.pool)) {
+	if (!LIST_IS_EMPTY(&rscreen->fences.pool)) {
 		struct r600_fence *entry;
 
 		/* Try to find a freed fence that has been signalled */
-		LIST_FOR_EACH_ENTRY(entry, &ctx->fences.pool, head) {
-			if (ctx->fences.data[entry->index] != 0) {
+		LIST_FOR_EACH_ENTRY(entry, &rscreen->fences.pool, head) {
+			if (rscreen->fences.data[entry->index] != 0) {
 				LIST_DELINIT(&entry->head);
 				fence = entry;
 				break;
@@ -86,33 +91,42 @@ static struct r600_fence *r600_create_fence(struct r600_pipe_context *ctx)
 		struct r600_fence_block *block;
 		unsigned index;
 
-		if ((ctx->fences.next_index + 1) >= 1024) {
+		if ((rscreen->fences.next_index + 1) >= 1024) {
 			R600_ERR("r600: too many concurrent fences\n");
-			return NULL;
+			goto out;
 		}
 
-		index = ctx->fences.next_index++;
+		index = rscreen->fences.next_index++;
 
 		if (!(index % FENCE_BLOCK_SIZE)) {
 			/* Allocate a new block */
 			block = CALLOC_STRUCT(r600_fence_block);
 			if (block == NULL)
-				return NULL;
+				goto out;
 
-			LIST_ADD(&block->head, &ctx->fences.blocks);
+			LIST_ADD(&block->head, &rscreen->fences.blocks);
 		} else {
-			block = LIST_ENTRY(struct r600_fence_block, ctx->fences.blocks.next, head);
+			block = LIST_ENTRY(struct r600_fence_block, rscreen->fences.blocks.next, head);
 		}
 
 		fence = &block->fences[index % FENCE_BLOCK_SIZE];
-		fence->ctx = ctx;
 		fence->index = index;
 	}
 
 	pipe_reference_init(&fence->reference, 1);
 
-	ctx->fences.data[fence->index] = 0;
-	r600_context_emit_fence(&ctx->ctx, ctx->fences.bo, fence->index, 1);
+	rscreen->fences.data[fence->index] = 0;
+	r600_context_emit_fence(&ctx->ctx, rscreen->fences.bo, fence->index, 1);
+
+	/* Create a dummy BO so that fence_finish without a timeout can sleep waiting for completion */
+	fence->sleep_bo = (struct r600_resource*)
+			pipe_buffer_create(&ctx->ctx.screen->screen, PIPE_BIND_CUSTOM,
+					   PIPE_USAGE_STAGING, 1);
+	/* Add the fence as a dummy relocation. */
+	r600_context_bo_reloc(&ctx->ctx, fence->sleep_bo, RADEON_USAGE_READWRITE);
+
+out:
+	pipe_mutex_unlock(rscreen->fences.mutex);
 	return fence;
 }
 
@@ -122,11 +136,25 @@ void r600_flush(struct pipe_context *ctx, struct pipe_fence_handle **fence,
 {
 	struct r600_pipe_context *rctx = (struct r600_pipe_context *)ctx;
 	struct r600_fence **rfence = (struct r600_fence**)fence;
+	struct pipe_query *render_cond = NULL;
+	unsigned render_cond_mode = 0;
 
 	if (rfence)
 		*rfence = r600_create_fence(rctx);
 
+	/* Disable render condition. */
+	if (rctx->current_render_cond) {
+		render_cond = rctx->current_render_cond;
+		render_cond_mode = rctx->current_render_cond_mode;
+		ctx->render_condition(ctx, NULL, 0);
+	}
+
 	r600_context_flush(&rctx->ctx, flags);
+
+	/* Re-enable render condition. */
+	if (render_cond) {
+		ctx->render_condition(ctx, render_cond, render_cond_mode);
+	}
 }
 
 static void r600_flush_from_st(struct pipe_context *ctx,
@@ -177,18 +205,6 @@ static void r600_destroy_context(struct pipe_context *context)
 	u_vbuf_destroy(rctx->vbuf_mgr);
 	util_slab_destroy(&rctx->pool_transfers);
 
-	if (rctx->fences.bo) {
-		struct r600_fence_block *entry, *tmp;
-
-		LIST_FOR_EACH_ENTRY_SAFE(entry, tmp, &rctx->fences.blocks, head) {
-			LIST_DEL(&entry->head);
-			FREE(entry);
-		}
-
-		rctx->ws->buffer_unmap(rctx->fences.bo->buf);
-		pipe_resource_reference((struct pipe_resource**)&rctx->fences.bo, NULL);
-	}
-
 	r600_update_num_contexts(rctx->screen, -1);
 
 	FREE(rctx);
@@ -215,12 +231,6 @@ static struct pipe_context *r600_create_context(struct pipe_screen *screen, void
 	rctx->ws = rscreen->ws;
 	rctx->family = rscreen->family;
 	rctx->chip_class = rscreen->chip_class;
-
-	rctx->fences.bo = NULL;
-	rctx->fences.data = NULL;
-	rctx->fences.next_index = 0;
-	LIST_INITHEAD(&rctx->fences.pool);
-	LIST_INITHEAD(&rctx->fences.blocks);
 
 	r600_init_blit_functions(rctx);
 	r600_init_query_functions(rctx);
@@ -258,6 +268,8 @@ static struct pipe_context *r600_create_context(struct pipe_screen *screen, void
 		return NULL;
 	}
 
+	rctx->ctx.pipe = &rctx->context;
+	rctx->ctx.flush = r600_flush_from_winsys;
 	rctx->ws->cs_set_flush_callback(rctx->ctx.cs, r600_flush_from_winsys, rctx);
 
 	util_slab_create(&rctx->pool_transfers,
@@ -341,7 +353,6 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	/* Supported features (boolean caps). */
 	case PIPE_CAP_NPOT_TEXTURES:
 	case PIPE_CAP_TWO_SIDED_STENCIL:
-	case PIPE_CAP_GLSL:
 	case PIPE_CAP_DUAL_SOURCE_BLEND:
 	case PIPE_CAP_ANISOTROPIC_FILTER:
 	case PIPE_CAP_POINT_SPRITE:
@@ -351,7 +362,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_BLEND_EQUATION_SEPARATE:
 	case PIPE_CAP_TEXTURE_SWIZZLE:
 	case PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE:
-	case PIPE_CAP_DEPTH_CLAMP:
+	case PIPE_CAP_DEPTH_CLIP_DISABLE:
 	case PIPE_CAP_SHADER_STENCIL_EXPORT:
 	case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
 	case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
@@ -363,6 +374,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_PRIMITIVE_RESTART:
 	case PIPE_CAP_CONDITIONAL_RENDER:
 	case PIPE_CAP_TEXTURE_BARRIER:
+	case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
 		return 1;
 
 	/* Supported except the original R600. */
@@ -376,11 +388,20 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 		return family >= CHIP_CEDAR ? 1 : 0;
 
 	/* Unsupported features. */
-	case PIPE_CAP_STREAM_OUTPUT:
 	case PIPE_CAP_TGSI_INSTANCEID:
 	case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
 	case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+	case PIPE_CAP_SCALED_RESOLVE:
+	case PIPE_CAP_TGSI_CAN_COMPACT_VARYINGS:
+	case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
 		return 0;
+
+	/* Stream output. */
+	case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
+		return debug_get_bool_option("R600_STREAMOUT", FALSE) ? 4 : 0;
+	case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
+	case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
+		return 16*4;
 
 	/* Texturing. */
 	case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
@@ -410,35 +431,36 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 
 	case PIPE_CAP_MAX_TEXEL_OFFSET:
 		return 7;
-
-	default:
-		R600_ERR("r600: unknown param %d\n", param);
-		return 0;
 	}
+	return 0;
 }
 
-static float r600_get_paramf(struct pipe_screen* pscreen, enum pipe_cap param)
+static float r600_get_paramf(struct pipe_screen* pscreen,
+			     enum pipe_capf param)
 {
 	struct r600_screen *rscreen = (struct r600_screen *)pscreen;
 	enum radeon_family family = rscreen->family;
 
 	switch (param) {
-	case PIPE_CAP_MAX_LINE_WIDTH:
-	case PIPE_CAP_MAX_LINE_WIDTH_AA:
-	case PIPE_CAP_MAX_POINT_WIDTH:
-	case PIPE_CAP_MAX_POINT_WIDTH_AA:
+	case PIPE_CAPF_MAX_LINE_WIDTH:
+	case PIPE_CAPF_MAX_LINE_WIDTH_AA:
+	case PIPE_CAPF_MAX_POINT_WIDTH:
+	case PIPE_CAPF_MAX_POINT_WIDTH_AA:
 		if (family >= CHIP_CEDAR)
 			return 16384.0f;
 		else
 			return 8192.0f;
-	case PIPE_CAP_MAX_TEXTURE_ANISOTROPY:
+	case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
 		return 16.0f;
-	case PIPE_CAP_MAX_TEXTURE_LOD_BIAS:
+	case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
 		return 16.0f;
-	default:
-		R600_ERR("r600: unsupported paramf %d\n", param);
+	case PIPE_CAPF_GUARD_BAND_LEFT:
+	case PIPE_CAPF_GUARD_BAND_TOP:
+	case PIPE_CAPF_GUARD_BAND_RIGHT:
+	case PIPE_CAPF_GUARD_BAND_BOTTOM:
 		return 0.0f;
 	}
+	return 0.0f;
 }
 
 static int r600_get_shader_param(struct pipe_screen* pscreen, unsigned shader, enum pipe_shader_cap param)
@@ -479,7 +501,7 @@ static int r600_get_shader_param(struct pipe_screen* pscreen, unsigned shader, e
 	case PIPE_SHADER_CAP_MAX_CONSTS:
 		return R600_MAX_CONST_BUFFER_SIZE;
 	case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
-		return R600_MAX_CONST_BUFFERS;
+		return R600_MAX_CONST_BUFFERS-1;
 	case PIPE_SHADER_CAP_MAX_PREDS:
 		return 0; /* FIXME */
 	case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
@@ -492,14 +514,13 @@ static int r600_get_shader_param(struct pipe_screen* pscreen, unsigned shader, e
 	case PIPE_SHADER_CAP_SUBROUTINES:
 		return 0;
 	case PIPE_SHADER_CAP_INTEGERS:
-		if (rscreen->chip_class == EVERGREEN)
-			return 1;
 		return 0;
 	case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
 		return 16;
-	default:
-		return 0;
+	case PIPE_SHADER_CAP_OUTPUT_READ:
+		return 1;
 	}
+	return 0;
 }
 
 static int r600_get_video_param(struct pipe_screen *screen,
@@ -514,8 +535,6 @@ static int r600_get_video_param(struct pipe_screen *screen,
 	case PIPE_VIDEO_CAP_MAX_WIDTH:
 	case PIPE_VIDEO_CAP_MAX_HEIGHT:
 		return vl_video_buffer_max_size(screen);
-	case PIPE_VIDEO_CAP_NUM_BUFFERS_DESIRED:
-		return vl_num_buffers_desired(screen, profile);
 	default:
 		return 0;
 	}
@@ -527,6 +546,19 @@ static void r600_destroy_screen(struct pipe_screen* pscreen)
 
 	if (rscreen == NULL)
 		return;
+
+	if (rscreen->fences.bo) {
+		struct r600_fence_block *entry, *tmp;
+
+		LIST_FOR_EACH_ENTRY_SAFE(entry, tmp, &rscreen->fences.blocks, head) {
+			LIST_DEL(&entry->head);
+			FREE(entry);
+		}
+
+		rscreen->ws->buffer_unmap(rscreen->fences.bo->buf);
+		pipe_resource_reference((struct pipe_resource**)&rscreen->fences.bo, NULL);
+	}
+	pipe_mutex_destroy(rscreen->fences.mutex);
 
 	rscreen->ws->destroy(rscreen->ws);
 
@@ -543,8 +575,11 @@ static void r600_fence_reference(struct pipe_screen *pscreen,
 	struct r600_fence *newf = (struct r600_fence*)fence;
 
 	if (pipe_reference(&(*oldf)->reference, &newf->reference)) {
-		struct r600_pipe_context *ctx = (*oldf)->ctx;
-		LIST_ADDTAIL(&(*oldf)->head, &ctx->fences.pool);
+		struct r600_screen *rscreen = (struct r600_screen *)pscreen;
+		pipe_mutex_lock(rscreen->fences.mutex);
+		pipe_resource_reference((struct pipe_resource**)&(*oldf)->sleep_bo, NULL);
+		LIST_ADDTAIL(&(*oldf)->head, &rscreen->fences.pool);
+		pipe_mutex_unlock(rscreen->fences.mutex);
 	}
 
 	*ptr = fence;
@@ -553,18 +588,18 @@ static void r600_fence_reference(struct pipe_screen *pscreen,
 static boolean r600_fence_signalled(struct pipe_screen *pscreen,
                                     struct pipe_fence_handle *fence)
 {
+	struct r600_screen *rscreen = (struct r600_screen *)pscreen;
 	struct r600_fence *rfence = (struct r600_fence*)fence;
-	struct r600_pipe_context *ctx = rfence->ctx;
 
-	return ctx->fences.data[rfence->index];
+	return rscreen->fences.data[rfence->index];
 }
 
 static boolean r600_fence_finish(struct pipe_screen *pscreen,
                                  struct pipe_fence_handle *fence,
                                  uint64_t timeout)
 {
+	struct r600_screen *rscreen = (struct r600_screen *)pscreen;
 	struct r600_fence *rfence = (struct r600_fence*)fence;
-	struct r600_pipe_context *ctx = rfence->ctx;
 	int64_t start_time = 0;
 	unsigned spins = 0;
 
@@ -575,7 +610,18 @@ static boolean r600_fence_finish(struct pipe_screen *pscreen,
 		timeout /= 1000;
 	}
 
-	while (ctx->fences.data[rfence->index] == 0) {
+	while (rscreen->fences.data[rfence->index] == 0) {
+		/* Special-case infinite timeout - wait for the dummy BO to become idle */
+		if (timeout == PIPE_TIMEOUT_INFINITE) {
+			rscreen->ws->buffer_wait(rfence->sleep_bo->buf, RADEON_USAGE_READWRITE);
+			break;
+		}
+
+		/* The dummy BO will be busy until the CS including the fence has completed, or
+		 * the GPU is reset. Don't bother continuing to spin when the BO is idle. */
+		if (!rscreen->ws->buffer_is_busy(rfence->sleep_bo->buf, RADEON_USAGE_READWRITE))
+			break;
+
 		if (++spins % 256)
 			continue;
 #ifdef PIPE_OS_UNIX
@@ -585,11 +631,11 @@ static boolean r600_fence_finish(struct pipe_screen *pscreen,
 #endif
 		if (timeout != PIPE_TIMEOUT_INFINITE &&
 		    os_time_get() - start_time >= timeout) {
-			return FALSE;
+			break;
 		}
 	}
 
-	return TRUE;
+	return rscreen->fences.data[rfence->index] != 0;
 }
 
 static int r600_interpret_tiling(struct r600_screen *rscreen, uint32_t tiling_config)
@@ -773,6 +819,13 @@ struct pipe_screen *r600_screen_create(struct radeon_winsys *ws)
 			 UTIL_SLAB_SINGLETHREADED);
 
 	pipe_mutex_init(rscreen->mutex_num_contexts);
+
+	rscreen->fences.bo = NULL;
+	rscreen->fences.data = NULL;
+	rscreen->fences.next_index = 0;
+	LIST_INITHEAD(&rscreen->fences.pool);
+	LIST_INITHEAD(&rscreen->fences.blocks);
+	pipe_mutex_init(rscreen->fences.mutex);
 
 	return &rscreen->screen;
 }

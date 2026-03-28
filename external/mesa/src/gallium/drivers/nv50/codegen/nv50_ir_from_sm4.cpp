@@ -18,7 +18,7 @@ static nv50_ir::SVSemantic irSemantic(unsigned sn)
    case NV50_SEMANTIC_VIEWPORTINDEX: return nv50_ir::SV_VIEWPORT_INDEX;
    case TGSI_SEMANTIC_PSIZE:         return nv50_ir::SV_POINT_SIZE;
    case NV50_SEMANTIC_CLIPDISTANCE:  return nv50_ir::SV_CLIP_DISTANCE;
-   case NV50_SEMANTIC_VERTEXID:      return nv50_ir::SV_VERTEX_ID;
+   case TGSI_SEMANTIC_VERTEXID:      return nv50_ir::SV_VERTEX_ID;
    case TGSI_SEMANTIC_INSTANCEID:    return nv50_ir::SV_INSTANCE_ID;
    case TGSI_SEMANTIC_PRIMID:        return nv50_ir::SV_PRIMITIVE_ID;
    case NV50_SEMANTIC_TESSFACTOR:    return nv50_ir::SV_TESS_FACTOR;
@@ -652,7 +652,7 @@ Converter::tgsiSemantic(SVSemantic sv, int index)
    case SV_VIEWPORT_INDEX: return NV50_SEMANTIC_VIEWPORTINDEX;
    case SV_POINT_SIZE:     return TGSI_SEMANTIC_PSIZE;
    case SV_CLIP_DISTANCE:  return NV50_SEMANTIC_CLIPDISTANCE;
-   case SV_VERTEX_ID:      return NV50_SEMANTIC_VERTEXID;
+   case SV_VERTEX_ID:      return TGSI_SEMANTIC_VERTEXID;
    case SV_INSTANCE_ID:    return TGSI_SEMANTIC_INSTANCEID;
    case SV_PRIMITIVE_ID:   return TGSI_SEMANTIC_PRIMID;
    case SV_TESS_FACTOR:    return NV50_SEMANTIC_TESSFACTOR;
@@ -712,7 +712,7 @@ Converter::parseSignature()
          info.in[r].sn = TGSI_SEMANTIC_POSITION;
          break;
       case D3D_NAME_VERTEX_ID:
-         info.in[r].sn = NV50_SEMANTIC_VERTEXID;
+         info.in[r].sn = TGSI_SEMANTIC_VERTEXID;
          break;
       case D3D_NAME_PRIMITIVE_ID:
          info.in[r].sn = TGSI_SEMANTIC_PRIMID;
@@ -899,10 +899,10 @@ Converter::inspectDeclaration(const sm4_dcl& dcl)
          assert(prog->getType() != Program::TYPE_FRAGMENT);
          break;
       case SM4_SV_CULL_DISTANCE: // XXX: order ?
-         info.io.cullDistanceMask |= 1 << info.io.clipDistanceCount;
-	 // fall through
+         info.io.cullDistanceMask |= 1 << info.io.clipDistanceMask;
+      // fall through
       case SM4_SV_CLIP_DISTANCE:
-         info.io.clipDistanceCount++;
+         info.io.clipDistanceMask++; // abuse as count
          break;
       default:
          break;
@@ -2256,6 +2256,9 @@ Converter::run()
    nrArrays = 0;
    for (unsigned int pos = 0; pos < sm4.dcls.size(); ++pos)
       handleDeclaration(*sm4.dcls[pos]);
+
+   info.io.genUserClip = -1; // no UCPs permitted with SM4 shaders
+   info.io.clipDistanceMask = (1 << info.io.clipDistanceMask) - 1;
 
    info.assignSlots(&info);
 

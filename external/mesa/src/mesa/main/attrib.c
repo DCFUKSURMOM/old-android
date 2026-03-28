@@ -47,6 +47,7 @@
 #include "multisample.h"
 #include "points.h"
 #include "polygon.h"
+#include "shared.h"
 #include "scissor.h"
 #include "stencil.h"
 #include "texenv.h"
@@ -58,6 +59,8 @@
 #include "viewport.h"
 #include "mtypes.h"
 #include "main/dispatch.h"
+#include "hash.h"
+#include <stdbool.h>
 
 
 /**
@@ -163,6 +166,13 @@ struct texture_state
     * deleted while saved in the attribute stack).
     */
    struct gl_texture_object *SavedTexRef[MAX_TEXTURE_UNITS][NUM_TEXTURE_TARGETS];
+
+   /* We need to keep a reference to the shared state.  That's where the
+    * default texture objects are kept.  We don't want that state to be
+    * freed while the attribute stack contains pointers to any default
+    * texture objects.
+    */
+   struct gl_shared_state *SharedRef;
 };
 
 
@@ -434,6 +444,8 @@ _mesa_PushAttrib(GLbitfield mask)
                                       ctx->Texture.Unit[u].CurrentTex[tex]);
          }
       }
+
+      _mesa_reference_shared_state(ctx, &texstate->SharedRef, ctx->Shared);
 
       _mesa_unlock_context_textures(ctx);
 
@@ -804,6 +816,8 @@ pop_texture_group(struct gl_context *ctx, struct texture_state *texstate)
 
    _mesa_ActiveTextureARB(GL_TEXTURE0_ARB + texstate->Texture.CurrentUnit);
 
+   _mesa_reference_shared_state(ctx, &texstate->SharedRef, NULL);
+
    _mesa_unlock_context_textures(ctx);
 }
 
@@ -1068,7 +1082,7 @@ _mesa_PopAttrib(void)
                      p[0] = l->QuadraticAttenuation;
                      _mesa_light(ctx, i, GL_QUADRATIC_ATTENUATION, p);
                   }
-                }
+               }
                /* light model */
                _mesa_LightModelfv(GL_LIGHT_MODEL_AMBIENT,
                                   light->Model.Ambient);
@@ -1320,21 +1334,8 @@ copy_array_object(struct gl_context *ctx,
    /* skip RefCount */
 
    /* In theory must be the same anyway, but on recreate make sure it matches */
-   dest->VBOonly = src->VBOonly;
+   dest->ARBsemantics = src->ARBsemantics;
 
-   _mesa_copy_client_array(ctx, &dest->Vertex, &src->Vertex);
-   _mesa_copy_client_array(ctx, &dest->Weight, &src->Weight);
-   _mesa_copy_client_array(ctx, &dest->Normal, &src->Normal);
-   _mesa_copy_client_array(ctx, &dest->Color, &src->Color);
-   _mesa_copy_client_array(ctx, &dest->SecondaryColor, &src->SecondaryColor);
-   _mesa_copy_client_array(ctx, &dest->FogCoord, &src->FogCoord);
-   _mesa_copy_client_array(ctx, &dest->Index, &src->Index);
-   _mesa_copy_client_array(ctx, &dest->EdgeFlag, &src->EdgeFlag);
-#if FEATURE_point_size_array
-   _mesa_copy_client_array(ctx, &dest->PointSize, &src->PointSize);
-#endif
-   for (i = 0; i < Elements(src->TexCoord); i++)
-      _mesa_copy_client_array(ctx, &dest->TexCoord[i], &src->TexCoord[i]);
    for (i = 0; i < Elements(src->VertexAttrib); i++)
       _mesa_copy_client_array(ctx, &dest->VertexAttrib[i], &src->VertexAttrib[i]);
 
@@ -1350,7 +1351,8 @@ copy_array_object(struct gl_context *ctx,
 static void
 copy_array_attrib(struct gl_context *ctx,
                   struct gl_array_attrib *dest,
-                  struct gl_array_attrib *src)
+                  struct gl_array_attrib *src,
+                  bool vbo_deleted)
 {
    /* skip ArrayObj */
    /* skip DefaultArrayObj, Objects */
@@ -1362,7 +1364,8 @@ copy_array_attrib(struct gl_context *ctx,
    /* skip NewState */
    /* skip RebindArrays */
 
-   copy_array_object(ctx, dest->ArrayObj, src->ArrayObj);
+   if (!vbo_deleted)
+      copy_array_object(ctx, dest->ArrayObj, src->ArrayObj);
 
    /* skip ArrayBufferObj */
    /* skip ElementArrayBufferObj */
@@ -1380,13 +1383,13 @@ save_array_attrib(struct gl_context *ctx,
     * Needs to match value in the object hash. */
    dest->ArrayObj->Name = src->ArrayObj->Name;
    /* And copy all of the rest. */
-   copy_array_attrib(ctx, dest, src);
+   copy_array_attrib(ctx, dest, src, false);
 
    /* Just reference them here */
    _mesa_reference_buffer_object(ctx, &dest->ArrayBufferObj,
                                  src->ArrayBufferObj);
-   _mesa_reference_buffer_object(ctx, &dest->ElementArrayBufferObj,
-                                 src->ElementArrayBufferObj);
+   _mesa_reference_buffer_object(ctx, &dest->ArrayObj->ElementArrayBufferObj,
+                                 src->ArrayObj->ElementArrayBufferObj);
 }
 
 /**
@@ -1397,17 +1400,44 @@ restore_array_attrib(struct gl_context *ctx,
                      struct gl_array_attrib *dest,
                      struct gl_array_attrib *src)
 {
-   /* Restore or recreate the array object by its name ... */
+   /* The ARB_vertex_array_object spec says:
+    *
+    *     "BindVertexArray fails and an INVALID_OPERATION error is generated
+    *     if array is not a name returned from a previous call to
+    *     GenVertexArrays, or if such a name has since been deleted with
+    *     DeleteVertexArrays."
+    *
+    * Therefore popping a deleted VAO cannot magically recreate it.
+    *
+    * The semantics of objects created using APPLE_vertex_array_objects behave
+    * differently.  These objects expect to be recreated by pop.  Alas.
+    */
+   const bool arb_vao = (src->ArrayObj->Name != 0
+			 && src->ArrayObj->ARBsemantics);
+
+   if (arb_vao && !_mesa_IsVertexArrayAPPLE(src->ArrayObj->Name))
+      return;
+
    _mesa_BindVertexArrayAPPLE(src->ArrayObj->Name);
 
-   /* ... and restore its content */
-   copy_array_attrib(ctx, dest, src);
-
    /* Restore or recreate the buffer objects by the names ... */
-   _mesa_BindBufferARB(GL_ARRAY_BUFFER_ARB,
-                       src->ArrayBufferObj->Name);
-   _mesa_BindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,
-                       src->ElementArrayBufferObj->Name);
+   if (!arb_vao
+       || src->ArrayBufferObj->Name == 0
+       || _mesa_IsBufferARB(src->ArrayBufferObj->Name)) {
+      /* ... and restore its content */
+      copy_array_attrib(ctx, dest, src, false);
+
+      _mesa_BindBufferARB(GL_ARRAY_BUFFER_ARB,
+			  src->ArrayBufferObj->Name);
+   } else {
+      copy_array_attrib(ctx, dest, src, true);
+   }
+
+   if (!arb_vao
+       || src->ArrayObj->ElementArrayBufferObj->Name == 0
+       || _mesa_IsBufferARB(src->ArrayObj->ElementArrayBufferObj->Name))
+      _mesa_BindBufferARB(GL_ELEMENT_ARRAY_BUFFER_ARB,
+			  src->ArrayObj->ElementArrayBufferObj->Name);
 
    /* Better safe than sorry?! */
    dest->RebindArrays = GL_TRUE;
@@ -1447,7 +1477,6 @@ free_array_attrib_data(struct gl_context *ctx,
    _mesa_delete_array_object(ctx, attrib->ArrayObj);
    attrib->ArrayObj = 0;
    _mesa_reference_buffer_object(ctx, &attrib->ArrayBufferObj, NULL);
-   _mesa_reference_buffer_object(ctx, &attrib->ElementArrayBufferObj, NULL);
 }
 
 
@@ -1588,6 +1617,7 @@ _mesa_free_attrib_data(struct gl_context *ctx)
                   _mesa_reference_texobj(&texstate->SavedTexRef[u][tgt], NULL);
                }
             }
+            _mesa_reference_shared_state(ctx, &texstate->SharedRef, NULL);
          }
          else {
             /* any other chunks of state that requires special handling? */

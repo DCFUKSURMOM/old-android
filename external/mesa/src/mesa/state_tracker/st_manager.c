@@ -222,7 +222,6 @@ st_framebuffer_validate(struct st_framebuffer *stfb,
          continue;
       }
 
-      memset(&surf_tmpl, 0, sizeof(surf_tmpl));
       u_surface_default_template(&surf_tmpl, textures[i],
                                  PIPE_BIND_RENDER_TARGET);
       ps = st->pipe->create_surface(st->pipe, textures[i], &surf_tmpl);
@@ -404,54 +403,6 @@ st_visual_to_context_mode(const struct st_visual *visual,
 }
 
 /**
- * Determine the default draw or read buffer from a visual.
- */
-static void
-st_visual_to_default_buffer(const struct st_visual *visual,
-                            GLenum *buffer, GLint *index)
-{
-   enum st_attachment_type statt;
-   GLenum buf;
-   gl_buffer_index idx;
-
-   statt = visual->render_buffer;
-   /* do nothing if an invalid render buffer is specified */
-   if (statt == ST_ATTACHMENT_INVALID ||
-       !st_visual_have_buffers(visual, 1 << statt))
-      return;
-
-   switch (statt) {
-   case ST_ATTACHMENT_FRONT_LEFT:
-      buf = GL_FRONT_LEFT;
-      idx = BUFFER_FRONT_LEFT;
-      break;
-   case ST_ATTACHMENT_BACK_LEFT:
-      buf = GL_BACK_LEFT;
-      idx = BUFFER_BACK_LEFT;
-      break;
-   case ST_ATTACHMENT_FRONT_RIGHT:
-      buf = GL_FRONT_RIGHT;
-      idx = BUFFER_FRONT_RIGHT;
-      break;
-   case ST_ATTACHMENT_BACK_RIGHT:
-      buf = GL_BACK_RIGHT;
-      idx = BUFFER_BACK_RIGHT;
-      break;
-   default:
-      buf = GL_NONE;
-      idx = BUFFER_COUNT;
-      break;
-   }
-
-   if (buf != GL_NONE) {
-      if (buffer)
-         *buffer = buf;
-      if (index)
-         *index = idx;
-   }
-}
-
-/**
  * Create a framebuffer from a manager interface.
  */
 static struct st_framebuffer *
@@ -470,12 +421,6 @@ st_framebuffer_create(struct st_framebuffer_iface *stfbi)
 
    st_visual_to_context_mode(stfbi->visual, &mode);
    _mesa_initialize_window_framebuffer(&stfb->Base, &mode);
-
-   /* modify the draw/read buffers of the fb */
-   st_visual_to_default_buffer(stfbi->visual, &stfb->Base.ColorDrawBuffer[0],
-         &stfb->Base._ColorDrawBufferIndexes[0]);
-   st_visual_to_default_buffer(stfbi->visual, &stfb->Base.ColorReadBuffer,
-         &stfb->Base._ColorReadBufferIndex);
 
    stfb->iface = stfbi;
    stfb->iface_stamp = p_atomic_read(&stfbi->stamp) - 1;
@@ -589,7 +534,7 @@ st_context_teximage(struct st_context_iface *stctxi,
       texFormat = st_ChooseTextureFormat(ctx, internalFormat,
                                          GL_BGRA, GL_UNSIGNED_BYTE);
 
-      _mesa_init_teximage_fields(ctx, target, texImage,
+      _mesa_init_teximage_fields(ctx, texImage,
                                  tex->width0, tex->height0, 1, 0,
                                  internalFormat, texFormat);
 
@@ -654,6 +599,7 @@ st_context_destroy(struct st_context_iface *stctxi)
 static struct st_context_iface *
 st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
                       const struct st_context_attribs *attribs,
+                      enum st_context_error *error,
                       struct st_context_iface *shared_stctxi)
 {
    struct st_context *shared_ctx = (struct st_context *) shared_stctxi;
@@ -677,17 +623,21 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
       break;
    case ST_PROFILE_OPENGL_CORE:
    default:
+      *error = ST_CONTEXT_ERROR_BAD_API;
       return NULL;
       break;
    }
 
    pipe = smapi->screen->context_create(smapi->screen, NULL);
-   if (!pipe)
+   if (!pipe) {
+      *error = ST_CONTEXT_ERROR_NO_MEMORY;
       return NULL;
+   }
 
    st_visual_to_context_mode(&attribs->visual, &mode);
    st = st_create_context(api, pipe, &mode, shared_ctx);
    if (!st) {
+      *error = ST_CONTEXT_ERROR_NO_MEMORY;
       pipe->destroy(pipe);
       return NULL;
    }
@@ -696,9 +646,14 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
    if (attribs->major > 1 || attribs->minor > 0) {
       _mesa_compute_version(st->ctx);
 
-      /* is the actual version less than the requested version? */
+      /* Is the actual version less than the requested version?  Mesa can't
+       * yet enforce the added restrictions of a forward-looking context, so
+       * fail that too.
+       */
       if (st->ctx->VersionMajor * 10 + st->ctx->VersionMinor <
-          attribs->major * 10 + attribs->minor) {
+          attribs->major * 10 + attribs->minor
+	  || (attribs->flags & ~ST_CONTEXT_FLAG_DEBUG) != 0) {
+	 *error = ST_CONTEXT_ERROR_BAD_VERSION;
          st_destroy_context(st);
          return NULL;
       }
@@ -714,6 +669,7 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
    st->iface.share = st_context_share;
    st->iface.st_context_private = (void *) smapi;
 
+   *error = ST_CONTEXT_SUCCESS;
    return &st->iface;
 }
 
@@ -732,7 +688,9 @@ st_framebuffer_reuse_or_create(struct gl_framebuffer *fb,
 {
    struct st_framebuffer *cur = st_ws_framebuffer(fb), *stfb = NULL;
 
-   if (cur && cur->iface == stfbi) {
+   /* dummy framebuffers cant be used as st_framebuffer */
+   if (cur && &cur->Base != _mesa_get_incomplete_framebuffer() &&
+       cur->iface == stfbi) {
       /* reuse the current stfb */
       st_framebuffer_reference(&stfb, cur);
    }
@@ -775,16 +733,6 @@ st_api_make_current(struct st_api *stapi, struct st_context_iface *stctxi,
          st_framebuffer_validate(stdraw, st);
          if (stread != stdraw)
             st_framebuffer_validate(stread, st);
-
-         /* modify the draw/read buffers of the context */
-         if (stdraw->iface) {
-            st_visual_to_default_buffer(stdraw->iface->visual,
-                  &st->ctx->Color.DrawBuffer[0], NULL);
-         }
-         if (stread->iface) {
-            st_visual_to_default_buffer(stread->iface->visual,
-                  &st->ctx->Pixel.ReadBuffer, NULL);
-         }
 
          ret = _mesa_make_current(st->ctx, &stdraw->Base, &stread->Base);
 
@@ -833,7 +781,7 @@ st_manager_flush_frontbuffer(struct st_context *st)
       return;
 
    /* never a dummy fb */
-   assert(stfb->iface);
+   assert(&stfb->Base != _mesa_get_incomplete_framebuffer());
    stfb->iface->flush_front(stfb->iface, ST_ATTACHMENT_FRONT_LEFT);
 }
 

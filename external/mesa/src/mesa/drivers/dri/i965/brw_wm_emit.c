@@ -888,6 +888,11 @@ void emit_math1(struct brw_wm_compile *c,
 		      BRW_MATH_SATURATE_NONE);
    struct brw_reg src;
 
+   if (!(mask & WRITEMASK_XYZW))
+      return; /* Do not emit dead code */
+
+   assert(is_power_of_two(mask & WRITEMASK_XYZW));
+
    if (intel->gen >= 6 && ((arg0[0].hstride == BRW_HORIZONTAL_STRIDE_0 ||
 			    arg0[0].file != BRW_GENERAL_REGISTER_FILE) ||
 			   arg0[0].negate || arg0[0].abs)) {
@@ -902,11 +907,6 @@ void emit_math1(struct brw_wm_compile *c,
    } else {
       src = arg0[0];
    }
-
-   if (!(mask & WRITEMASK_XYZW))
-      return; /* Do not emit dead code */
-
-   assert(is_power_of_two(mask & WRITEMASK_XYZW));
 
    /* Send two messages to perform all 16 operations:
     */
@@ -1078,6 +1078,7 @@ void emit_tex(struct brw_wm_compile *c,
    case TEXTURE_2D_INDEX:
    case TEXTURE_1D_ARRAY_INDEX:
    case TEXTURE_RECT_INDEX:
+   case TEXTURE_EXTERNAL_INDEX:
       emit = WRITEMASK_XY;
       nr_texcoords = 2;
       break;
@@ -1109,7 +1110,7 @@ void emit_tex(struct brw_wm_compile *c,
 
    /* Emit the texcoords. */
    for (i = 0; i < nr_texcoords; i++) {
-      if (c->key.gl_clamp_mask[i] & (1 << sampler))
+      if (c->key.tex.gl_clamp_mask[i] & (1 << sampler))
 	 brw_set_saturate(p, true);
 
       if (emit & (1<<i))
@@ -1162,7 +1163,8 @@ void emit_tex(struct brw_wm_compile *c,
 	      response_length,
 	      cur_mrf - 1,
 	      1,
-	      simd_mode);
+	      simd_mode,
+	      BRW_SAMPLER_RETURN_FORMAT_FLOAT32);
 }
 
 
@@ -1211,6 +1213,7 @@ void emit_txb(struct brw_wm_compile *c,
       break;
    case TEXTURE_2D_INDEX:
    case TEXTURE_RECT_INDEX:
+   case TEXTURE_EXTERNAL_INDEX:
       brw_MOV(p, brw_message_reg(2 + 0 * mrf_per_channel), arg[0]);
       brw_MOV(p, brw_message_reg(2 + 1 * mrf_per_channel), arg[1]);
       brw_MOV(p, brw_message_reg(2 + 2 * mrf_per_channel), brw_imm_f(0));
@@ -1240,7 +1243,8 @@ void emit_txb(struct brw_wm_compile *c,
 	      response_length,
 	      msgLength,
 	      1,
-	      BRW_SAMPLER_SIMD_MODE_SIMD16);	
+	      BRW_SAMPLER_SIMD_MODE_SIMD16,
+	      BRW_SAMPLER_RETURN_FORMAT_FLOAT32);
 }
 
 
@@ -1526,7 +1530,7 @@ void emit_fb_write(struct brw_wm_compile *c,
    else {
       struct brw_reg v1_null_ud = vec1(retype(brw_null_reg(), BRW_REGISTER_TYPE_UD));
       struct brw_reg ip = brw_ip_reg();
-      struct brw_instruction *jmp;
+      int jmp;
       
       brw_set_compression_control(p, BRW_COMPRESSION_NONE);
       brw_set_conditionalmod(p, BRW_CONDITIONAL_Z);
@@ -1535,7 +1539,7 @@ void emit_fb_write(struct brw_wm_compile *c,
 	      get_element_ud(brw_vec8_grf(1,0), 6), 
 	      brw_imm_ud(1<<26)); 
 
-      jmp = brw_JMPI(p, ip, ip, brw_imm_w(0));
+      jmp = brw_JMPI(p, ip, ip, brw_imm_w(0)) - p->store;
       {
 	 emit_aa(c, arg1, 2);
 	 fire_fb_write(c, 0, nr, target, eot);

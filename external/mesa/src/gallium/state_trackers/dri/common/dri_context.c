@@ -50,7 +50,12 @@ dri_pp_query(struct dri_context *ctx)
 
 GLboolean
 dri_create_context(gl_api api, const struct gl_config * visual,
-		   __DRIcontext * cPriv, void *sharedContextPrivate)
+		   __DRIcontext * cPriv,
+		   unsigned major_version,
+		   unsigned minor_version,
+		   uint32_t flags,
+		   unsigned *error,
+		   void *sharedContextPrivate)
 {
    __DRIscreen *sPriv = cPriv->driScreenPriv;
    struct dri_screen *screen = dri_screen(sPriv);
@@ -58,6 +63,7 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    struct dri_context *ctx = NULL;
    struct st_context_iface *st_share = NULL;
    struct st_context_attribs attribs;
+   enum st_context_error ctx_err = 0;
 
    memset(&attribs, 0, sizeof(attribs));
    switch (api) {
@@ -67,9 +73,20 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    case API_OPENGLES2:
       attribs.profile = ST_PROFILE_OPENGL_ES2;
       break;
-   default:
+   case API_OPENGL:
       attribs.profile = ST_PROFILE_DEFAULT;
+      attribs.major = major_version;
+      attribs.minor = minor_version;
+
+      if ((flags & __DRI_CTX_FLAG_DEBUG) != 0)
+	 attribs.flags |= ST_CONTEXT_FLAG_DEBUG;
+
+      if ((flags & __DRI_CTX_FLAG_FORWARD_COMPATIBLE) != 0)
+	 attribs.flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
       break;
+   default:
+      *error = __DRI_CTX_ERROR_BAD_API;
+      goto fail;
    }
 
    if (sharedContextPrivate) {
@@ -77,8 +94,10 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    }
 
    ctx = CALLOC_STRUCT(dri_context);
-   if (ctx == NULL)
+   if (ctx == NULL) {
+      *error = __DRI_CTX_ERROR_NO_MEMORY;
       goto fail;
+   }
 
    cPriv->driverPrivate = ctx;
    ctx->cPriv = cPriv;
@@ -88,9 +107,34 @@ dri_create_context(gl_api api, const struct gl_config * visual,
 		       &screen->optionCache, sPriv->myNum, "dri");
 
    dri_fill_st_visual(&attribs.visual, screen, visual);
-   ctx->st = stapi->create_context(stapi, &screen->base, &attribs, st_share);
-   if (ctx->st == NULL)
+   ctx->st = stapi->create_context(stapi, &screen->base, &attribs, &ctx_err,
+				   st_share);
+   if (ctx->st == NULL) {
+      switch (ctx_err) {
+      case ST_CONTEXT_SUCCESS:
+	 *error = __DRI_CTX_ERROR_SUCCESS;
+	 break;
+      case ST_CONTEXT_ERROR_NO_MEMORY:
+	 *error = __DRI_CTX_ERROR_NO_MEMORY;
+	 break;
+      case ST_CONTEXT_ERROR_BAD_API:
+	 *error = __DRI_CTX_ERROR_BAD_API;
+	 break;
+      case ST_CONTEXT_ERROR_BAD_VERSION:
+	 *error = __DRI_CTX_ERROR_BAD_VERSION;
+	 break;
+      case ST_CONTEXT_ERROR_BAD_FLAG:
+	 *error = __DRI_CTX_ERROR_BAD_FLAG;
+	 break;
+      case ST_CONTEXT_ERROR_UNKNOWN_ATTRIBUTE:
+	 *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
+	 break;
+      case ST_CONTEXT_ERROR_UNKNOWN_FLAG:
+	 *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
+	 break;
+      }
       goto fail;
+   }
    ctx->st->st_manager_private = (void *) ctx;
    ctx->stapi = stapi;
 
@@ -99,6 +143,7 @@ dri_create_context(gl_api api, const struct gl_config * visual,
 
    ctx->pp = pp_init(screen->base.screen, ctx->pp_enabled);
 
+   *error = __DRI_CTX_ERROR_SUCCESS;
    return GL_TRUE;
 
  fail:
@@ -187,8 +232,7 @@ dri_make_current(__DRIcontext * cPriv,
    if (draw->textures[ST_ATTACHMENT_BACK_LEFT] && draw->textures[ST_ATTACHMENT_DEPTH_STENCIL]
       && ctx->pp)
          pp_init_fbos(ctx->pp, draw->textures[ST_ATTACHMENT_BACK_LEFT]->width0,
-            draw->textures[ST_ATTACHMENT_BACK_LEFT]->height0,
-            draw->textures[ST_ATTACHMENT_DEPTH_STENCIL]);
+            draw->textures[ST_ATTACHMENT_BACK_LEFT]->height0);
 
    return GL_TRUE;
 }

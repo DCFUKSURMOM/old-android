@@ -3,10 +3,10 @@ include $(TOP)/configs/current
 
 ##### MACROS #####
 
-XA_MAJOR = 0
-XA_MINOR = 4
+XA_MAJOR = 1
+XA_MINOR = 0
 XA_TINY = 0
-XA_CFLAGS = -g -fPIC
+XA_CFLAGS = -Wall -pedantic
 
 XA_INCLUDES= -I$(TOP)/src/gallium/ \
 	-I$(TOP)/src/gallium/auxiliary \
@@ -45,20 +45,24 @@ endif
 ##### RULES #####
 
 .c.o:
-	$(CC) -c $(XA_CFLAGS) $(XA_INCLUDES) $<
+	$(CC) -c $(XA_CFLAGS) $(CFLAGS) $(XA_INCLUDES) $<
 
 
 ##### TARGETS #####
 
 default: $(TOP)/$(LIB_DIR)/gallium/$(XA_LIB_NAME)
 
+# Generate list of library visible symbols
+xa_symbols: $(TOP)/src/gallium/state_trackers/xa/libxatracker.o
+	$(NM) $< | $(GREP) ' T ' | $(AWK) '{print $$3}' > $@
 
 # Make the library
-$(TOP)/$(LIB_DIR)/gallium/$(XA_LIB_NAME): depend $(OBJECTS) $(XA_LIB_DEPS)
+$(TOP)/$(LIB_DIR)/gallium/$(XA_LIB_NAME): depend $(OBJECTS) $(XA_LIB_DEPS) \
+	xa_symbols
 	$(MKLIB) -o $(XA_LIB) -linker $(LD) -ldflags '$(LDFLAGS)' \
 		-major $(XA_MAJOR) -minor $(XA_MINOR) -patch $(XA_TINY) \
 		$(MKLIB_OPTIONS) \
-		-exports $(TOP)/src/gallium/state_trackers/xa/xa_symbols\
+		-exports xa_symbols \
 		 -install $(TOP)/$(LIB_DIR)/gallium \
 		$(OBJECTS) $(XA_LIB_DEPS) $(GALLIUM_AUXILIARIES)
 
@@ -91,7 +95,7 @@ clean:
 	-rm -f *.la
 	-rm -f *.pc
 	-rm -rf .libs
-	-rm -f depend depend.bak exptmp
+	-rm -f depend depend.bak exptmp xa_symbols
 
 
 depend: $(SOURCES)

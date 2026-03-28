@@ -90,9 +90,8 @@ drm_create_buffer(struct wl_client *client, struct wl_resource *resource,
 	struct wl_drm_buffer *buffer;
 
 	switch (format) {
-	case WL_DRM_FORMAT_ARGB32:
-	case WL_DRM_FORMAT_PREMULTIPLIED_ARGB32:
-	case WL_DRM_FORMAT_XRGB32:
+	case WL_DRM_FORMAT_ARGB8888:
+	case WL_DRM_FORMAT_XRGB8888:
 		break;
 	default:
 		wl_resource_post_error(resource,
@@ -164,10 +163,10 @@ bind_drm(struct wl_client *client, void *data, uint32_t version, uint32_t id)
 	resource = wl_client_add_object(client, &wl_drm_interface,
 					&drm_interface, id, data);
 	wl_resource_post_event(resource, WL_DRM_DEVICE, drm->device_name);
-	wl_resource_post_event(resource, WL_DRM_FORMAT, WL_DRM_FORMAT_ARGB32);
 	wl_resource_post_event(resource, WL_DRM_FORMAT,
-			       WL_DRM_FORMAT_PREMULTIPLIED_ARGB32);
-	wl_resource_post_event(resource, WL_DRM_FORMAT, WL_DRM_FORMAT_XRGB32);
+			       WL_DRM_FORMAT_ARGB8888);
+	wl_resource_post_event(resource, WL_DRM_FORMAT,
+			       WL_DRM_FORMAT_XRGB8888);
 }
 
 struct wl_drm *
@@ -203,6 +202,14 @@ wayland_buffer_is_drm(struct wl_buffer *buffer)
 {
 	return buffer->resource.object.implementation == 
 		(void (**)(void)) &drm_buffer_interface;
+}
+
+uint32_t
+wayland_drm_buffer_get_format(struct wl_buffer *buffer_base)
+{
+	struct wl_drm_buffer *buffer = (struct wl_drm_buffer *) buffer_base;
+
+	return buffer->format;
 }
 
 void *

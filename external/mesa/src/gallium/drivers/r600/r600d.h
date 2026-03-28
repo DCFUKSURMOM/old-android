@@ -76,10 +76,23 @@
 #define PKT3_DRAW_INDEX_IMMD                   0x2E
 #define PKT3_NUM_INSTANCES                     0x2F
 #define PKT3_STRMOUT_BUFFER_UPDATE             0x34
+#define		STRMOUT_STORE_BUFFER_FILLED_SIZE	1
+#define		STRMOUT_OFFSET_SOURCE(x)	(((x) & 0x3) << 1)
+#define			STRMOUT_OFFSET_FROM_PACKET		0
+#define			STRMOUT_OFFSET_FROM_VGT_FILLED_SIZE	1
+#define			STRMOUT_OFFSET_FROM_MEM			2
+#define			STRMOUT_OFFSET_NONE			3
+#define		STRMOUT_SELECT_BUFFER(x)	(((x) & 0x3) << 8)
 #define PKT3_INDIRECT_BUFFER_MP                0x38
 #define PKT3_MEM_SEMAPHORE                     0x39
 #define PKT3_MPEG_INDEX                        0x3A
+#define PKT3_COPY_DW			       0x3B
+#define		COPY_DW_SRC_IS_REG		(0 << 0)
+#define		COPY_DW_SRC_IS_MEM		(1 << 0)
+#define		COPY_DW_DST_IS_REG		(0 << 1)
+#define		COPY_DW_DST_IS_MEM		(1 << 1)
 #define PKT3_WAIT_REG_MEM                      0x3C
+#define		WAIT_REG_MEM_EQUAL		3
 #define PKT3_MEM_WRITE                         0x3D
 #define PKT3_INDIRECT_BUFFER                   0x32
 #define PKT3_CP_INTERRUPT                      0x40
@@ -106,6 +119,8 @@
 #define EVENT_TYPE_CACHE_FLUSH_AND_INV_TS_EVENT 0x14
 #define EVENT_TYPE_ZPASS_DONE                  0x15
 #define EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT   0x16
+#define EVENT_TYPE_SO_VGTSTREAMOUT_FLUSH	0x1f
+#define EVENT_TYPE_SAMPLE_STREAMOUTSTATS	0x20
 #define		EVENT_TYPE(x)                           ((x) << 0)
 #define		EVENT_INDEX(x)                          ((x) << 8)
                 /* 0 - any non-TS event
@@ -147,6 +162,12 @@
 #define PKT3(op, count, predicate) (PKT_TYPE_S(3) | PKT3_IT_OPCODE_S(op) | PKT_COUNT_S(count) | PKT3_PRED_S(predicate))
 
 /* Registers */
+#define R_008490_CP_STRMOUT_CNTL		     0x008490
+#define   S_008490_OFFSET_UPDATE_DONE(x)		(((x) & 0x1) << 0)
+#define R_008960_VGT_STRMOUT_BUFFER_FILLED_SIZE_0    0x008960 /* read-only */
+#define R_008964_VGT_STRMOUT_BUFFER_FILLED_SIZE_1    0x008964 /* read-only */
+#define R_008968_VGT_STRMOUT_BUFFER_FILLED_SIZE_2    0x008968 /* read-only */
+#define R_00896C_VGT_STRMOUT_BUFFER_FILLED_SIZE_3    0x00896C /* read-only */
 #define R_008C00_SQ_CONFIG                           0x00008C00
 #define   S_008C00_VC_ENABLE(x)                        (((x) & 0x1) << 0)
 #define   G_008C00_VC_ENABLE(x)                        (((x) >> 0) & 0x1)
@@ -1776,31 +1797,6 @@
 #define   S_008DFC_CF_INST(x)                          (((x) & 0x7F) << 23)
 #define   G_008DFC_CF_INST(x)                          (((x) >> 23) & 0x7F)
 #define   C_008DFC_CF_INST                             0xC07FFFFF
-#define     V_008DFC_SQ_CF_INST_NOP                    0x00000000
-#define     V_008DFC_SQ_CF_INST_TEX                    0x00000001
-#define     V_008DFC_SQ_CF_INST_VTX                    0x00000002
-#define     V_008DFC_SQ_CF_INST_VTX_TC                 0x00000003
-#define     V_008DFC_SQ_CF_INST_LOOP_START             0x00000004
-#define     V_008DFC_SQ_CF_INST_LOOP_END               0x00000005
-#define     V_008DFC_SQ_CF_INST_LOOP_START_DX10        0x00000006
-#define     V_008DFC_SQ_CF_INST_LOOP_START_NO_AL       0x00000007
-#define     V_008DFC_SQ_CF_INST_LOOP_CONTINUE          0x00000008
-#define     V_008DFC_SQ_CF_INST_LOOP_BREAK             0x00000009
-#define     V_008DFC_SQ_CF_INST_JUMP                   0x0000000A
-#define     V_008DFC_SQ_CF_INST_PUSH                   0x0000000B
-#define     V_008DFC_SQ_CF_INST_PUSH_ELSE              0x0000000C
-#define     V_008DFC_SQ_CF_INST_ELSE                   0x0000000D
-#define     V_008DFC_SQ_CF_INST_POP                    0x0000000E
-#define     V_008DFC_SQ_CF_INST_POP_JUMP               0x0000000F
-#define     V_008DFC_SQ_CF_INST_POP_PUSH               0x00000010
-#define     V_008DFC_SQ_CF_INST_POP_PUSH_ELSE          0x00000011
-#define     V_008DFC_SQ_CF_INST_CALL                   0x00000012
-#define     V_008DFC_SQ_CF_INST_CALL_FS                0x00000013
-#define     V_008DFC_SQ_CF_INST_RETURN                 0x00000014
-#define     V_008DFC_SQ_CF_INST_EMIT_VERTEX            0x00000015
-#define     V_008DFC_SQ_CF_INST_EMIT_CUT_VERTEX        0x00000016
-#define     V_008DFC_SQ_CF_INST_CUT_VERTEX             0x00000017
-#define     V_008DFC_SQ_CF_INST_KILL                   0x00000018
 #define   S_008DFC_WHOLE_QUAD_MODE(x)                  (((x) & 0x1) << 30)
 #define   G_008DFC_WHOLE_QUAD_MODE(x)                  (((x) >> 30) & 0x1)
 #define   C_008DFC_WHOLE_QUAD_MODE                     0xBFFFFFFF
@@ -1884,15 +1880,6 @@
 #define   S_008DFC_CF_INST(x)                          (((x) & 0x7F) << 23)
 #define   G_008DFC_CF_INST(x)                          (((x) >> 23) & 0x7F)
 #define   C_008DFC_CF_INST                             0xC07FFFFF
-#define     V_008DFC_SQ_CF_INST_MEM_STREAM0            0x00000020
-#define     V_008DFC_SQ_CF_INST_MEM_STREAM1            0x00000021
-#define     V_008DFC_SQ_CF_INST_MEM_STREAM2            0x00000022
-#define     V_008DFC_SQ_CF_INST_MEM_STREAM3            0x00000023
-#define     V_008DFC_SQ_CF_INST_MEM_SCRATCH            0x00000024
-#define     V_008DFC_SQ_CF_INST_MEM_REDUCTION          0x00000025
-#define     V_008DFC_SQ_CF_INST_MEM_RING               0x00000026
-#define     V_008DFC_SQ_CF_INST_EXPORT                 0x00000027
-#define     V_008DFC_SQ_CF_INST_EXPORT_DONE            0x00000028
 #define   S_008DFC_WHOLE_QUAD_MODE(x)                  (((x) & 0x1) << 30)
 #define   G_008DFC_WHOLE_QUAD_MODE(x)                  (((x) >> 30) & 0x1)
 #define   C_008DFC_WHOLE_QUAD_MODE                     0xBFFFFFFF
@@ -3178,6 +3165,26 @@
 #define   S_028AB8_VTX_CNT_EN(x)                       (((x) & 0x1) << 0)
 #define   G_028AB8_VTX_CNT_EN(x)                       (((x) >> 0) & 0x1)
 #define   C_028AB8_VTX_CNT_EN                          0xFFFFFFFE
+#define R_028AD0_VGT_STRMOUT_BUFFER_SIZE_0	     0x028AD0
+#define R_028AD4_VGT_STRMOUT_VTX_STRIDE_0	     0x028AD4
+#define R_028AD8_VGT_STRMOUT_BUFFER_BASE_0	     0x028AD8
+#define R_028ADC_VGT_STRMOUT_BUFFER_OFFSET_0	     0x028ADC
+#define R_028AE0_VGT_STRMOUT_BUFFER_SIZE_1	     0x028AE0
+#define R_028AE4_VGT_STRMOUT_VTX_STRIDE_1	     0x028AE4
+#define R_028AE8_VGT_STRMOUT_BUFFER_BASE_1	     0x028AE8
+#define R_028AEC_VGT_STRMOUT_BUFFER_OFFSET_1	     0x028AEC
+#define R_028AF0_VGT_STRMOUT_BUFFER_SIZE_2	     0x028AF0
+#define R_028AF4_VGT_STRMOUT_VTX_STRIDE_2	     0x028AF4
+#define R_028AF8_VGT_STRMOUT_BUFFER_BASE_2	     0x028AF8
+#define R_028AFC_VGT_STRMOUT_BUFFER_OFFSET_2	     0x028AFC
+#define R_028B00_VGT_STRMOUT_BUFFER_SIZE_3	     0x028B00
+#define R_028B04_VGT_STRMOUT_VTX_STRIDE_3	     0x028B04
+#define R_028B08_VGT_STRMOUT_BUFFER_BASE_3	     0x028B08
+#define R_028B0C_VGT_STRMOUT_BUFFER_OFFSET_3	     0x028B0C
+#define R_028B10_VGT_STRMOUT_BASE_OFFSET_0	     0x028B10
+#define R_028B14_VGT_STRMOUT_BASE_OFFSET_1	     0x028B14
+#define R_028B18_VGT_STRMOUT_BASE_OFFSET_2	     0x028B18
+#define R_028B1C_VGT_STRMOUT_BASE_OFFSET_3	     0x028B1C
 #define R_028B20_VGT_STRMOUT_BUFFER_EN               0x028B20
 #define   S_028B20_BUFFER_0_EN(x)                      (((x) & 0x1) << 0)
 #define   G_028B20_BUFFER_0_EN(x)                      (((x) >> 0) & 0x1)
@@ -3191,6 +3198,13 @@
 #define   S_028B20_BUFFER_3_EN(x)                      (((x) & 0x1) << 3)
 #define   G_028B20_BUFFER_3_EN(x)                      (((x) >> 3) & 0x1)
 #define   C_028B20_BUFFER_3_EN                         0xFFFFFFF7
+#define R_028B28_VGT_STRMOUT_DRAW_OPAQUE_OFFSET	     0x028B28
+#define R_028B2C_VGT_STRMOUT_DRAW_OPAQUE_BUFFER_FILLED_SIZE 0x028B2C
+#define R_028B30_VGT_STRMOUT_DRAW_OPAQUE_VERTEX_STRIDE 0x028B30
+#define R_028B44_VGT_STRMOUT_BASE_OFFSET_HI_0	     0x028B44
+#define R_028B48_VGT_STRMOUT_BASE_OFFSET_HI_1	     0x028B48
+#define R_028B4C_VGT_STRMOUT_BASE_OFFSET_HI_2	     0x028B4C
+#define R_028B50_VGT_STRMOUT_BASE_OFFSET_HI_3	     0x028B50
 #define R_028C20_PA_SC_AA_SAMPLE_LOCS_8S_WD1_MCTX    0x028C20
 #define   S_028C20_S4_X(x)                             (((x) & 0xF) << 0)
 #define   G_028C20_S4_X(x)                             (((x) >> 0) & 0xF)
@@ -3314,6 +3328,9 @@
 #define   S_0085F0_CR2_ACTION_ENA(x)                   (((x) & 0x1) << 31)
 #define   G_0085F0_CR2_ACTION_ENA(x)                   (((x) >> 31) & 0x1)
 #define   C_0085F0_CR2_ACTION_ENA                      0x7FFFFFFF
+#define R_0085F4_CP_COHER_SIZE                       0x0085F4
+#define R_0085F8_CP_COHER_BASE                       0x0085F8
+#define R_0085FC_CP_COHER_STATUS                     0x0085FC
 
 
 #define R_02812C_CB_CLEAR_ALPHA                      0x02812C
@@ -3521,9 +3538,13 @@
 #define R_038018_RESOURCE0_WORD6                     0x038018
 
 #define R_028140_ALU_CONST_BUFFER_SIZE_PS_0          0x00028140
+#define R_028144_ALU_CONST_BUFFER_SIZE_PS_1          0x00028144
 #define R_028180_ALU_CONST_BUFFER_SIZE_VS_0          0x00028180
+#define R_028184_ALU_CONST_BUFFER_SIZE_VS_1          0x00028184
 #define R_028940_ALU_CONST_CACHE_PS_0                0x00028940
+#define R_028944_ALU_CONST_CACHE_PS_1                0x00028944
 #define R_028980_ALU_CONST_CACHE_VS_0                0x00028980
+#define R_028984_ALU_CONST_CACHE_VS_1                0x00028984
 
 #define R_03CFF0_SQ_VTX_BASE_VTX_LOC                 0x03CFF0
 #define R_03CFF4_SQ_VTX_START_INST_LOC               0x03CFF4

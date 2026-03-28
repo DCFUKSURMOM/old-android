@@ -48,13 +48,13 @@ extern "C" {
 #include "glsl/ir.h"
 
 enum register_file {
-   ARF = BRW_ARCHITECTURE_REGISTER_FILE,
-   GRF = BRW_GENERAL_REGISTER_FILE,
-   MRF = BRW_MESSAGE_REGISTER_FILE,
-   IMM = BRW_IMMEDIATE_VALUE,
+   BAD_FILE,
+   ARF,
+   GRF,
+   MRF,
+   IMM,
    FIXED_HW_REG, /* a struct brw_reg */
    UNIFORM, /* prog_data->params[reg] */
-   BAD_FILE
 };
 
 class fs_reg {
@@ -159,7 +159,7 @@ public:
    struct brw_reg fixed_hw_reg;
    int smear; /* -1, or a channel of the reg to smear to all channels. */
 
-   /** Value for file == BRW_IMMMEDIATE_FILE */
+   /** Value for file == IMM */
    union {
       int32_t i;
       uint32_t u;
@@ -286,14 +286,26 @@ public:
 	      offset == inst->offset);
    }
 
+   int regs_written()
+   {
+      if (is_tex())
+	 return 4;
+
+      /* The SINCOS and INT_DIV_QUOTIENT_AND_REMAINDER math functions return 2,
+       * but we don't currently use them...nor do we have an opcode for them.
+       */
+
+      return 1;
+   }
+
    bool is_tex()
    {
-      return (opcode == FS_OPCODE_TEX ||
+      return (opcode == SHADER_OPCODE_TEX ||
 	      opcode == FS_OPCODE_TXB ||
-	      opcode == FS_OPCODE_TXD ||
-	      opcode == FS_OPCODE_TXF ||
-	      opcode == FS_OPCODE_TXL ||
-	      opcode == FS_OPCODE_TXS);
+	      opcode == SHADER_OPCODE_TXD ||
+	      opcode == SHADER_OPCODE_TXF ||
+	      opcode == SHADER_OPCODE_TXL ||
+	      opcode == SHADER_OPCODE_TXS);
    }
 
    bool is_math()
@@ -376,10 +388,10 @@ public:
       else
 	 this->reg_null_cmp = reg_null_f;
 
-      this->frag_color = NULL;
-      this->frag_data = NULL;
       this->frag_depth = NULL;
+      memset(this->outputs, 0, sizeof(this->outputs));
       this->first_non_payload_grf = 0;
+      this->max_grf = intel->gen >= 7 ? GEN7_MRF_HACK_START : BRW_MAX_GRF;
 
       this->current_annotation = NULL;
       this->base_ir = NULL;
@@ -490,6 +502,13 @@ public:
    void generate_linterp(fs_inst *inst, struct brw_reg dst,
 			 struct brw_reg *src);
    void generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src);
+   void generate_math1_gen7(fs_inst *inst,
+			    struct brw_reg dst,
+			    struct brw_reg src);
+   void generate_math2_gen7(fs_inst *inst,
+			    struct brw_reg dst,
+			    struct brw_reg src0,
+			    struct brw_reg src1);
    void generate_math1_gen6(fs_inst *inst,
 			    struct brw_reg dst,
 			    struct brw_reg src);
@@ -526,7 +545,7 @@ public:
    void emit_if_gen6(ir_if *ir);
    void emit_unspill(fs_inst *inst, fs_reg reg, uint32_t spill_offset);
 
-   void emit_color_write(int index, int first_color_mrf, fs_reg color);
+   void emit_color_write(int target, int index, int first_color_mrf);
    void emit_fb_writes();
    bool try_rewrite_rhs_to_dst(ir_assignment *ir,
 			       fs_reg dst,
@@ -574,8 +593,10 @@ public:
    int *params_remap;
 
    struct hash_table *variable_ht;
-   ir_variable *frag_color, *frag_data, *frag_depth;
+   ir_variable *frag_depth;
+   fs_reg outputs[BRW_MAX_DRAW_BUFFERS];
    int first_non_payload_grf;
+   int max_grf;
    int urb_setup[FRAG_ATTRIB_MAX];
    bool kill_emitted;
 

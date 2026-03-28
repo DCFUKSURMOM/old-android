@@ -50,7 +50,8 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *ctx,
    this->symbols = new(mem_ctx) glsl_symbol_table;
    this->info_log = ralloc_strdup(mem_ctx, "");
    this->error = false;
-   this->loop_or_switch_nesting = NULL;
+   this->loop_nesting_ast = NULL;
+   this->switch_state.switch_nesting_ast = NULL;
 
    this->num_builtins_to_link = 0;
 
@@ -113,6 +114,9 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *ctx,
    }
 
    this->supported_version_string = supported;
+
+   if (ctx->Const.ForceGLSLExtensionsWarn)
+      _mesa_glsl_process_extension("all", NULL, "warn", NULL, this);
 }
 
 const char *
@@ -255,7 +259,7 @@ struct _mesa_glsl_extension {
 static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    /*                                  target availability  API availability */
    /* name                             VS     GS     FS     GL     ES         supported flag */
-   EXT(ARB_conservative_depth,         true,  false, true,  true,  false,     AMD_conservative_depth),
+   EXT(ARB_conservative_depth,         false, false, true,  true,  false,     ARB_conservative_depth),
    EXT(ARB_draw_buffers,               false, false, true,  true,  false,     dummy_true),
    EXT(ARB_draw_instanced,             true,  false, false, true,  false,     ARB_draw_instanced),
    EXT(ARB_explicit_attrib_location,   true,  false, true,  true,  false,     ARB_explicit_attrib_location),
@@ -264,7 +268,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(EXT_texture_array,              true,  false, true,  true,  false,     EXT_texture_array),
    EXT(ARB_shader_texture_lod,         true,  false, true,  true,  false,     ARB_shader_texture_lod),
    EXT(ARB_shader_stencil_export,      false, false, true,  true,  false,     ARB_shader_stencil_export),
-   EXT(AMD_conservative_depth,         true,  false, true,  true,  false,     AMD_conservative_depth),
+   EXT(AMD_conservative_depth,         false, false, true,  true,  false,     ARB_conservative_depth),
    EXT(AMD_shader_stencil_export,      false, false, true,  true,  false,     ARB_shader_stencil_export),
    EXT(OES_texture_3D,                 true,  false, true,  false, true,      EXT_texture3D),
    EXT(OES_EGL_image_external,         true,  false, true,  false, true,      OES_EGL_image_external),
@@ -625,6 +629,7 @@ ast_expression::ast_expression(int oper,
    this->subexpressions[0] = ex0;
    this->subexpressions[1] = ex1;
    this->subexpressions[2] = ex2;
+   this->non_lvalue_description = NULL;
 }
 
 
@@ -802,6 +807,106 @@ ast_selection_statement::ast_selection_statement(ast_expression *condition,
    this->condition = condition;
    this->then_statement = then_statement;
    this->else_statement = else_statement;
+}
+
+
+void
+ast_switch_statement::print(void) const
+{
+   printf("switch ( ");
+   test_expression->print();
+   printf(") ");
+
+   body->print();
+}
+
+
+ast_switch_statement::ast_switch_statement(ast_expression *test_expression,
+					   ast_node *body)
+{
+   this->test_expression = test_expression;
+   this->body = body;
+}
+
+
+void
+ast_switch_body::print(void) const
+{
+   printf("{\n");
+   if (stmts != NULL) {
+      stmts->print();
+   }
+   printf("}\n");
+}
+
+
+ast_switch_body::ast_switch_body(ast_case_statement_list *stmts)
+{
+   this->stmts = stmts;
+}
+
+
+void ast_case_label::print(void) const
+{
+   if (test_value != NULL) {
+      printf("case ");
+      test_value->print();
+      printf(": ");
+   } else {
+      printf("default: ");
+   }
+}
+
+
+ast_case_label::ast_case_label(ast_expression *test_value)
+{
+   this->test_value = test_value;
+}
+
+
+void ast_case_label_list::print(void) const
+{
+   foreach_list_const(n, & this->labels) {
+      ast_node *ast = exec_node_data(ast_node, n, link);
+      ast->print();
+   }
+   printf("\n");
+}
+
+
+ast_case_label_list::ast_case_label_list(void)
+{
+}
+
+
+void ast_case_statement::print(void) const
+{
+   labels->print();
+   foreach_list_const(n, & this->stmts) {
+      ast_node *ast = exec_node_data(ast_node, n, link);
+      ast->print();
+      printf("\n");
+   }
+}
+
+
+ast_case_statement::ast_case_statement(ast_case_label_list *labels)
+{
+   this->labels = labels;
+}
+
+
+void ast_case_statement_list::print(void) const
+{
+   foreach_list_const(n, & this->cases) {
+      ast_node *ast = exec_node_data(ast_node, n, link);
+      ast->print();
+   }
+}
+
+
+ast_case_statement_list::ast_case_statement_list(void)
+{
 }
 
 

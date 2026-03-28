@@ -226,6 +226,22 @@ enum pipe_transfer_usage {
    PIPE_TRANSFER_MAP_DIRECTLY = (1 << 2),
 
    /**
+    * The transfer should map the resource storage directly and the GPU should
+    * be able to see what the CPU has written. Such a storage may stay mapped
+    * while issuing draw commands which use it. The only allowed usage is
+    * non-overlapping writes which are suballocated out of a big buffer.
+    * The minimum allowed alignment of suballocations is 256 bytes (this is
+    * a subject to change).
+    * The flag is intended to be used to avoid mapping and unmapping
+    * resources repeatedly when doing uploads and draws intermixed.
+    *
+    * The driver may return NULL if that isn't possible, and the state
+    * tracker needs to cope with that and use an alternative path
+    * without this flag.
+    */
+   PIPE_TRANSFER_MAP_PERMANENTLY = (1 << 3),
+
+   /**
     * Discards the memory within the mapped region.
     *
     * It should not be used with PIPE_TRANSFER_READ.
@@ -233,7 +249,6 @@ enum pipe_transfer_usage {
     * See also:
     * - OpenGL's ARB_map_buffer_range extension, MAP_INVALIDATE_RANGE_BIT flag.
     */
-   PIPE_TRANSFER_DISCARD = (1 << 8), /* DEPRECATED */
    PIPE_TRANSFER_DISCARD_RANGE = (1 << 8),
 
    /**
@@ -419,12 +434,11 @@ enum pipe_transfer_usage {
 
 /**
  * Implementation capabilities/limits which are queried through
- * pipe_screen::get_param() and pipe_screen::get_paramf().
+ * pipe_screen::get_param()
  */
 enum pipe_cap {
    PIPE_CAP_NPOT_TEXTURES = 1,
    PIPE_CAP_TWO_SIDED_STENCIL = 2,
-   PIPE_CAP_GLSL = 3,  /* XXX need something better */
    PIPE_CAP_DUAL_SOURCE_BLEND = 4,
    PIPE_CAP_ANISOTROPIC_FILTER = 5,
    PIPE_CAP_POINT_SPRITE = 6,
@@ -436,20 +450,10 @@ enum pipe_cap {
    PIPE_CAP_MAX_TEXTURE_2D_LEVELS = 12,
    PIPE_CAP_MAX_TEXTURE_3D_LEVELS = 13,
    PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS = 14,
-   PIPE_CAP_MAX_LINE_WIDTH = 15,
-   PIPE_CAP_MAX_LINE_WIDTH_AA = 16,
-   PIPE_CAP_MAX_POINT_WIDTH = 17,
-   PIPE_CAP_MAX_POINT_WIDTH_AA = 18,
-   PIPE_CAP_MAX_TEXTURE_ANISOTROPY = 19,
-   PIPE_CAP_MAX_TEXTURE_LOD_BIAS = 20,
-   PIPE_CAP_GUARD_BAND_LEFT = 21,  /*< float */
-   PIPE_CAP_GUARD_BAND_TOP = 22,  /*< float */
-   PIPE_CAP_GUARD_BAND_RIGHT = 23,  /*< float */
-   PIPE_CAP_GUARD_BAND_BOTTOM = 24,  /*< float */
    PIPE_CAP_TEXTURE_MIRROR_CLAMP = 25,
    PIPE_CAP_BLEND_EQUATION_SEPARATE = 28,
    PIPE_CAP_SM3 = 29,  /*< Shader Model, supported */
-   PIPE_CAP_STREAM_OUTPUT = 30,
+   PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS = 30,
    PIPE_CAP_PRIMITIVE_RESTART = 31,
    /** Maximum texture image units accessible from vertex and fragment shaders
     * combined */
@@ -464,7 +468,7 @@ enum pipe_cap {
    PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT = 38,
    PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER = 39,
    PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER = 40,
-   PIPE_CAP_DEPTH_CLAMP = 41,
+   PIPE_CAP_DEPTH_CLIP_DISABLE = 41,
    PIPE_CAP_SHADER_STENCIL_EXPORT = 42,
    PIPE_CAP_TGSI_INSTANCEID = 43,
    PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR = 44,
@@ -476,7 +480,30 @@ enum pipe_cap {
    PIPE_CAP_MIN_TEXEL_OFFSET = 50,
    PIPE_CAP_MAX_TEXEL_OFFSET = 51,
    PIPE_CAP_CONDITIONAL_RENDER = 52,
-   PIPE_CAP_TEXTURE_BARRIER = 53
+   PIPE_CAP_TEXTURE_BARRIER = 53,
+   PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS = 55,
+   PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS = 56,
+   PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME = 57,
+   PIPE_CAP_TGSI_CAN_COMPACT_VARYINGS = 58, /* temporary */
+   PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS = 59 /* temporary */
+};
+
+/**
+ * Implementation limits which are queried through
+ * pipe_screen::get_paramf()
+ */
+enum pipe_capf
+{
+   PIPE_CAPF_MAX_LINE_WIDTH = 15,
+   PIPE_CAPF_MAX_LINE_WIDTH_AA = 16,
+   PIPE_CAPF_MAX_POINT_WIDTH = 17,
+   PIPE_CAPF_MAX_POINT_WIDTH_AA = 18,
+   PIPE_CAPF_MAX_TEXTURE_ANISOTROPY = 19,
+   PIPE_CAPF_MAX_TEXTURE_LOD_BIAS = 20,
+   PIPE_CAPF_GUARD_BAND_LEFT = 21,
+   PIPE_CAPF_GUARD_BAND_TOP = 22,
+   PIPE_CAPF_GUARD_BAND_RIGHT = 23,
+   PIPE_CAPF_GUARD_BAND_BOTTOM = 24
 };
 
 /* Shader caps not specific to any single stage */
@@ -501,7 +528,8 @@ enum pipe_shader_cap
    PIPE_SHADER_CAP_INDIRECT_CONST_ADDR = 15,
    PIPE_SHADER_CAP_SUBROUTINES = 16, /* BGNSUB, ENDSUB, CAL, RET */
    PIPE_SHADER_CAP_INTEGERS = 17,
-   PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS = 18
+   PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS = 18,
+   PIPE_SHADER_CAP_OUTPUT_READ = 19
 };
 
 

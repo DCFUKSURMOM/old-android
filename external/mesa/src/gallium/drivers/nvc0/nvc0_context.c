@@ -77,7 +77,7 @@ nvc0_context_unreference_resources(struct nvc0_context *nvc0)
    }
 
    for (i = 0; i < nvc0->num_tfbbufs; ++i)
-      pipe_resource_reference(&nvc0->tfbbuf[i], NULL);
+      pipe_so_target_reference(&nvc0->tfbbuf[i], NULL);
 }
 
 static void
@@ -110,7 +110,6 @@ nvc0_default_flush_notify(struct nouveau_channel *chan)
 struct pipe_context *
 nvc0_create(struct pipe_screen *pscreen, void *priv)
 {
-   struct pipe_winsys *pipe_winsys = pscreen->winsys;
    struct nvc0_screen *screen = nvc0_screen(pscreen);
    struct nvc0_context *nvc0;
    struct pipe_context *pipe;
@@ -126,7 +125,6 @@ nvc0_create(struct pipe_screen *pscreen, void *priv)
    nvc0->base.push_data = nvc0_m2mf_push_linear;
    nvc0->base.push_cb = nvc0_cb_push;
 
-   pipe->winsys = pipe_winsys;
    pipe->screen = pscreen;
    pipe->priv = priv;
 

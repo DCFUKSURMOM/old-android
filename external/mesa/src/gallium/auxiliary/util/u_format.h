@@ -70,9 +70,14 @@ enum util_format_layout {
    UTIL_FORMAT_LAYOUT_RGTC = 5,
 
    /**
+    * Ericsson Texture Compression
+    */
+   UTIL_FORMAT_LAYOUT_ETC = 6,
+
+   /**
     * Everything else that doesn't fit in any of the above layouts.
     */
-   UTIL_FORMAT_LAYOUT_OTHER = 6
+   UTIL_FORMAT_LAYOUT_OTHER = 7
 };
 
 
@@ -249,7 +254,7 @@ struct util_format_description
    /**
     * Fetch a single pixel (i, j) from a block.
     *
-    * Only defined for non-depth-stencil formats.
+    * Only defined for non-depth-stencil and non-integer formats.
     */
    void
    (*fetch_rgba_float)(float *dst,
@@ -353,6 +358,26 @@ struct util_format_description
    (*pack_rgba_sint)(uint8_t *dst, unsigned dst_stride,
                      const int *src, unsigned src_stride,
                      unsigned width, unsigned height);
+
+   /**
+    * Fetch a single pixel (i, j) from a block.
+    *
+    * Only defined for unsigned (pure) integer formats.
+    */
+   void
+   (*fetch_rgba_uint)(uint32_t *dst,
+                      const uint8_t *src,
+                      unsigned i, unsigned j);
+
+   /**
+    * Fetch a single pixel (i, j) from a block.
+    *
+    * Only defined for signed (pure) integer formats.
+    */
+   void
+   (*fetch_rgba_sint)(int32_t *dst,
+                      const uint8_t *src,
+                      unsigned i, unsigned j);
 };
 
 

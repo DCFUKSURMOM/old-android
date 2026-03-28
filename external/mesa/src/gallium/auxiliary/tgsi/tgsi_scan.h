@@ -70,10 +70,12 @@ struct tgsi_shader_info
    boolean writes_edgeflag; /**< vertex shader outputs edgeflag */
    boolean uses_kill;  /**< KIL or KILP instruction used? */
    boolean uses_instanceid;
+   boolean uses_vertexid;
    boolean origin_lower_left;
    boolean pixel_center_integer;
    boolean color0_writes_all_cbufs;
 
+   unsigned num_written_clipdistance;
    /**
     * Bitmask indicating which register files are accessed with
     * indirect addressing.  The bits are (1 << TGSI_FILE_x), etc.

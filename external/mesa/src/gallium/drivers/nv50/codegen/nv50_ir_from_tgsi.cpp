@@ -321,6 +321,7 @@ static nv50_ir::SVSemantic translateSysVal(uint sysval)
    case TGSI_SEMANTIC_PSIZE:      return nv50_ir::SV_POINT_SIZE;
    case TGSI_SEMANTIC_PRIMID:     return nv50_ir::SV_PRIMITIVE_ID;
    case TGSI_SEMANTIC_INSTANCEID: return nv50_ir::SV_INSTANCE_ID;
+   case TGSI_SEMANTIC_VERTEXID:   return nv50_ir::SV_VERTEX_ID;
    default:
       assert(0);
       return nv50_ir::SV_CLOCK;
@@ -344,6 +345,7 @@ static nv50_ir::TexTarget translateTexture(uint tex)
    NV50_IR_TEX_TARG_CASE(SHADOW2D, 2D_SHADOW);
    NV50_IR_TEX_TARG_CASE(SHADOW1D_ARRAY, 1D_ARRAY_SHADOW);
    NV50_IR_TEX_TARG_CASE(SHADOW2D_ARRAY, 2D_ARRAY_SHADOW);
+   NV50_IR_TEX_TARG_CASE(SHADOWCUBE, CUBE_SHADOW);
    NV50_IR_TEX_TARG_CASE(SHADOWRECT, RECT_SHADOW);
 
    case TGSI_TEXTURE_UNKNOWN:
@@ -378,10 +380,12 @@ nv50_ir::DataType Instruction::inferSrcType() const
    case TGSI_OPCODE_IDIV:
    case TGSI_OPCODE_IMAX:
    case TGSI_OPCODE_IMIN:
+   case TGSI_OPCODE_IABS:
    case TGSI_OPCODE_INEG:
    case TGSI_OPCODE_ISGE:
    case TGSI_OPCODE_ISHR:
    case TGSI_OPCODE_ISLT:
+   case TGSI_OPCODE_ISSG:
    case TGSI_OPCODE_SAD: // not sure about SAD, but no one has a float version
    case TGSI_OPCODE_MOD:
    case TGSI_OPCODE_UARL:
@@ -425,6 +429,7 @@ nv50_ir::CondCode Instruction::getSetCond() const
    case TGSI_OPCODE_USEQ:
       return CC_EQ;
    case TGSI_OPCODE_SNE:
+      return CC_NEU;
    case TGSI_OPCODE_USNE:
       return CC_NE;
    case TGSI_OPCODE_SFL:
@@ -514,6 +519,7 @@ static nv50_ir::operation translateOpcode(uint opcode)
    NV50_IR_OPCODE_CASE(IDIV, DIV);
    NV50_IR_OPCODE_CASE(IMAX, MAX);
    NV50_IR_OPCODE_CASE(IMIN, MIN);
+   NV50_IR_OPCODE_CASE(IABS, ABS);
    NV50_IR_OPCODE_CASE(INEG, NEG);
    NV50_IR_OPCODE_CASE(ISGE, SET);
    NV50_IR_OPCODE_CASE(ISHR, SHR);
@@ -593,6 +599,8 @@ public:
 
    bool mainTempsInLMem;
 
+   int clipVertexOutput;
+
    uint8_t *resourceTargets; // TGSI_TEXTURE_*
    unsigned resourceCount;
 
@@ -651,6 +659,8 @@ bool Source::scanSource()
    if (!insns)
       return false;
 
+   clipVertexOutput = -1;
+
    resourceCount = scan.file_max[TGSI_FILE_RESOURCE] + 1;
    resourceTargets = new uint8_t[resourceCount];
 
@@ -707,6 +717,9 @@ bool Source::scanSource()
    if (mainTempsInLMem)
       info->bin.tlsSpace += (scan.file_max[TGSI_FILE_TEMPORARY] + 1) * 16;
 
+   if (info->io.genUserClip > 0)
+      info->io.clipDistanceMask = (1 << info->io.genUserClip) - 1;
+
    return info->assignSlots(info) == 0;
 }
 
@@ -734,6 +747,9 @@ void Source::scanProperty(const struct tgsi_full_property *prop)
    case TGSI_PROPERTY_FS_COORD_PIXEL_CENTER:
       // we don't care
       break;
+   case TGSI_PROPERTY_VS_PROHIBIT_UCPS:
+      info->io.genUserClip = -1;
+      break;
    default:
       INFO("unhandled TGSI property %d\n", prop->Property.PropertyName);
       break;
@@ -756,7 +772,7 @@ int Source::inferSysValDirection(unsigned sn) const
 {
    switch (sn) {
    case TGSI_SEMANTIC_INSTANCEID:
-// case TGSI_SEMANTIC_VERTEXID:
+   case TGSI_SEMANTIC_VERTEXID:
       return 1;
 #if 0
    case TGSI_SEMANTIC_LAYER:
@@ -801,9 +817,11 @@ bool Source::scanDeclaration(const struct tgsi_full_declaration *decl)
                case TGSI_INTERPOLATE_CONSTANT:
                   info->in[i].flat = 1;
                   break;
+               case TGSI_INTERPOLATE_COLOR:
+                  info->in[i].sc = 1;
+                  break;
                case TGSI_INTERPOLATE_LINEAR:
-                  if (sn != TGSI_SEMANTIC_COLOR) // GL_NICEST
-                     info->in[i].linear = 1;
+                  info->in[i].linear = 1;
                   break;
                default:
                   break;
@@ -820,6 +838,9 @@ bool Source::scanDeclaration(const struct tgsi_full_declaration *decl)
          case TGSI_SEMANTIC_POSITION:
             if (info->type == PIPE_SHADER_FRAGMENT)
                info->io.fragDepth = i;
+            else
+            if (clipVertexOutput < 0)
+               clipVertexOutput = i;
             break;
          case TGSI_SEMANTIC_COLOR:
             if (info->type == PIPE_SHADER_FRAGMENT)
@@ -827,6 +848,14 @@ bool Source::scanDeclaration(const struct tgsi_full_declaration *decl)
             break;
          case TGSI_SEMANTIC_EDGEFLAG:
             info->io.edgeFlagOut = i;
+            break;
+         case TGSI_SEMANTIC_CLIPVERTEX:
+            clipVertexOutput = i;
+            break;
+         case TGSI_SEMANTIC_CLIPDIST:
+            info->io.clipDistanceMask |=
+               decl->Declaration.UsageMask << (si * 4);
+            info->io.genUserClip = -1;
             break;
          default:
             break;
@@ -837,6 +866,13 @@ bool Source::scanDeclaration(const struct tgsi_full_declaration *decl)
       }
       break;
    case TGSI_FILE_SYSTEM_VALUE:
+      switch (sn) {
+      case TGSI_SEMANTIC_VERTEXID:
+         info->io.vertexId = first;
+         break;
+      default:
+         break;
+      }
       for (i = first; i <= last; ++i, ++si) {
          info->sv[i].sn = sn;
          info->sv[i].si = si;
@@ -1107,7 +1143,7 @@ Converter::makeSym(uint tgsiFile, int fileIdx, int idx, int c, uint32_t address)
 static inline uint8_t
 translateInterpMode(const struct nv50_ir_varying *var, operation& op)
 {
-   uint8_t mode;
+   uint8_t mode = NV50_IR_INTERP_PERSPECTIVE;
 
    if (var->flat)
       mode = NV50_IR_INTERP_FLAT;
@@ -1115,9 +1151,11 @@ translateInterpMode(const struct nv50_ir_varying *var, operation& op)
    if (var->linear)
       mode = NV50_IR_INTERP_LINEAR;
    else
-      mode = NV50_IR_INTERP_PERSPECTIVE;
+   if (var->sc)
+      mode = NV50_IR_INTERP_SC;
 
-   op = (mode == NV50_IR_INTERP_PERSPECTIVE) ? OP_PINTERP : OP_LINTERP;
+   op = (mode == NV50_IR_INTERP_PERSPECTIVE || mode == NV50_IR_INTERP_SC)
+      ? OP_PINTERP : OP_LINTERP;
 
    if (var->centroid)
       mode |= NV50_IR_INTERP_CENTROID;
@@ -1324,9 +1362,9 @@ Converter::storeDst(int d, int c, Value *val)
    Value *ptr = dst.isIndirect(0) ?
       fetchSrc(dst.getIndirect(0), 0, NULL) : NULL;
 
-   if (info->io.clipDistanceCount &&
+   if (info->io.genUserClip > 0 &&
        dst.getFile() == TGSI_FILE_OUTPUT &&
-       info->out[dst.getIndex(0)].sn == TGSI_SEMANTIC_POSITION) {
+       !dst.isIndirect(0) && dst.getIndex(0) == code->clipVertexOutput) {
       mkMov(clipVtx[c], val);
       val = clipVtx[c];
    }
@@ -1716,6 +1754,7 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
    case TGSI_OPCODE_FLR:
    case TGSI_OPCODE_TRUNC:
    case TGSI_OPCODE_RCP:
+   case TGSI_OPCODE_IABS:
    case TGSI_OPCODE_INEG:
    case TGSI_OPCODE_NOT:
    case TGSI_OPCODE_DDX:
@@ -1865,14 +1904,18 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
          }
       }
       break;
+   case TGSI_OPCODE_ISSG:
    case TGSI_OPCODE_SSG:
       FOR_EACH_DST_ENABLED_CHANNEL(0, c, tgsi) {
          src0 = fetchSrc(0, c);
          val0 = getScratch();
          val1 = getScratch();
-         mkCmp(OP_SET, CC_GT, TYPE_F32, val0, src0, zero);
-         mkCmp(OP_SET, CC_LT, TYPE_F32, val1, src0, zero);
-         mkOp2(OP_SUB, TYPE_F32, dst0[c], val0, val1);
+         mkCmp(OP_SET, CC_GT, srcTy, val0, src0, zero);
+         mkCmp(OP_SET, CC_LT, srcTy, val1, src0, zero);
+         if (srcTy == TYPE_F32)
+            mkOp2(OP_SUB, TYPE_F32, dst0[c], val0, val1);
+         else
+            mkOp2(OP_SUB, TYPE_S32, dst0[c], val1, val0);
       }
       break;
    case TGSI_OPCODE_UCMP:
@@ -2136,7 +2179,7 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
       setPosition(epilogue, true);
       if (prog->getType() == Program::TYPE_FRAGMENT)
          exportOutputs();
-      if (info->io.clipDistanceCount)
+      if (info->io.genUserClip > 0)
          handleUserClipPlanes();
       mkOp(OP_EXIT, TYPE_NONE, NULL)->terminator = 1;
    }
@@ -2173,7 +2216,7 @@ Converter::handleUserClipPlanes()
    int i, c;
 
    for (c = 0; c < 4; ++c) {
-      for (i = 0; i < info->io.clipDistanceCount; ++i) {
+      for (i = 0; i < info->io.genUserClip; ++i) {
          Value *ucp;
          ucp = mkLoad(TYPE_F32, mkSymbol(FILE_MEMORY_CONST, 15, TYPE_F32,
                                          i * 16 + c * 4), NULL);
@@ -2184,7 +2227,7 @@ Converter::handleUserClipPlanes()
       }
    }
 
-   for (i = 0; i < info->io.clipDistanceCount; ++i)
+   for (i = 0; i < info->io.genUserClip; ++i)
       mkOp2(OP_WRSV, TYPE_F32, NULL, mkSysVal(SV_CLIP_DISTANCE, i), res[i]);
 }
 
@@ -2275,7 +2318,7 @@ Converter::run()
    entryBBs.push(entry);
    leaveBBs.push(leave);
 
-   if (info->io.clipDistanceCount) {
+   if (info->io.genUserClip > 0) {
       for (int c = 0; c < 4; ++c)
          clipVtx[c] = getScratch();
    }

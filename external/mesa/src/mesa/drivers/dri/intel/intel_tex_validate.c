@@ -52,9 +52,6 @@ intel_finalize_mipmap_tree(struct intel_context *intel, GLuint unit)
    intel_update_max_level(intelObj, sampler);
    firstImage = intel_texture_image(tObj->Image[0][tObj->BaseLevel]);
 
-   intel_miptree_get_dimensions_for_image(&firstImage->base.Base,
-                                          &width, &height, &depth);
-
    /* Check tree can hold all active levels.  Check tree matches
     * target, imageFormat, etc.
     *
@@ -64,13 +61,9 @@ intel_finalize_mipmap_tree(struct intel_context *intel, GLuint unit)
     * of that, we just always relayout on baselevel change.
     */
    if (intelObj->mt &&
-       (intelObj->mt->target != intelObj->base.Target ||
-	intelObj->mt->format != firstImage->base.Base.TexFormat ||
+       (!intel_miptree_match_image(intelObj->mt, &firstImage->base.Base) ||
 	intelObj->mt->first_level != tObj->BaseLevel ||
-	intelObj->mt->last_level < intelObj->_MaxLevel ||
-	intelObj->mt->width0 != width ||
-	intelObj->mt->height0 != height ||
-	intelObj->mt->depth0 != depth)) {
+	intelObj->mt->last_level < intelObj->_MaxLevel)) {
       intel_miptree_release(&intelObj->mt);
    }
 
@@ -78,6 +71,9 @@ intel_finalize_mipmap_tree(struct intel_context *intel, GLuint unit)
    /* May need to create a new tree:
     */
    if (!intelObj->mt) {
+      intel_miptree_get_dimensions_for_image(&firstImage->base.Base,
+					     &width, &height, &depth);
+
       intelObj->mt = intel_miptree_create(intel,
                                           intelObj->base.Target,
 					  firstImage->base.Base.TexFormat,
@@ -152,15 +148,15 @@ intel_tex_map_image_for_swrast(struct intel_context *intel,
 
       DBG("%s \n", __FUNCTION__);
 
-      intel_image->base.Data = intel_region_map(intel, mt->region, mode);
+      intel_image->base.Map = intel_region_map(intel, mt->region, mode);
    } else {
-      assert(mt->level[level].depth == 1);
+      assert(intel_image->base.Base.Depth == 1);
       intel_miptree_get_image_offset(mt, level, face, 0, &x, &y);
 
       DBG("%s: (%d,%d) -> (%d, %d)/%d\n",
 	  __FUNCTION__, face, level, x, y, mt->region->pitch * mt->cpp);
 
-      intel_image->base.Data = intel_region_map(intel, mt->region, mode) +
+      intel_image->base.Map = intel_region_map(intel, mt->region, mode) +
 	 (x + y * mt->region->pitch) * mt->cpp;
    }
 
@@ -173,7 +169,7 @@ intel_tex_unmap_image_for_swrast(struct intel_context *intel,
 {
    if (intel_image && intel_image->mt) {
       intel_region_unmap(intel, intel_image->mt->region);
-      intel_image->base.Data = NULL;
+      intel_image->base.Map = NULL;
    }
 }
 

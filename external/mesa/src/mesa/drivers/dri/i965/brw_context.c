@@ -31,14 +31,23 @@
 
 
 #include "main/imports.h"
-#include "main/api_noop.h"
 #include "main/macros.h"
 #include "main/simple_list.h"
+
+#include "vbo/vbo_context.h"
+
 #include "brw_context.h"
 #include "brw_defines.h"
 #include "brw_draw.h"
 #include "brw_state.h"
+
+#include "intel_fbo.h"
+#include "intel_mipmap_tree.h"
+#include "intel_regions.h"
 #include "intel_span.h"
+#include "intel_tex.h"
+#include "intel_tex_obj.h"
+
 #include "tnl/t_pipeline.h"
 #include "glsl/ralloc.h"
 
@@ -46,12 +55,20 @@
  * Mesa's Driver Functions
  ***************************************/
 
-static void brwInitDriverFunctions( struct dd_function_table *functions )
+static void brwInitDriverFunctions(struct intel_screen *screen,
+				   struct dd_function_table *functions)
 {
    intelInitDriverFunctions( functions );
 
    brwInitFragProgFuncs( functions );
    brw_init_queryobj_functions(functions);
+
+   functions->BeginTransformFeedback = brw_begin_transform_feedback;
+
+   if (screen->gen >= 7)
+      functions->EndTransformFeedback = gen7_end_transform_feedback;
+   else
+      functions->EndTransformFeedback = brw_end_transform_feedback;
 }
 
 bool
@@ -60,6 +77,8 @@ brwCreateContext(int api,
 		 __DRIcontext *driContextPriv,
 	         void *sharedContextPrivate)
 {
+   __DRIscreen *sPriv = driContextPriv->driScreenPriv;
+   struct intel_screen *screen = sPriv->driverPrivate;
    struct dd_function_table functions;
    struct brw_context *brw = rzalloc(NULL, struct brw_context);
    struct intel_context *intel = &brw->intel;
@@ -71,7 +90,7 @@ brwCreateContext(int api,
       return false;
    }
 
-   brwInitDriverFunctions( &functions );
+   brwInitDriverFunctions(screen, &functions);
 
    if (!intelInitContext( intel, api, mesaVis, driContextPriv,
 			  sharedContextPrivate, &functions )) {
@@ -81,6 +100,8 @@ brwCreateContext(int api,
    }
 
    brwInitVtbl( brw );
+
+   brw_init_surface_formats(brw);
 
    /* Initialize swrast, tnl driver tables: */
    intelInitSpanFuncs(ctx);
@@ -92,7 +113,7 @@ brwCreateContext(int api,
    ctx->Const.MaxTextureCoordUnits = 8; /* Mesa limit */
    ctx->Const.MaxTextureUnits = MIN2(ctx->Const.MaxTextureCoordUnits,
                                      ctx->Const.MaxTextureImageUnits);
-   ctx->Const.MaxVertexTextureImageUnits = 0; /* no vertex shader textures */
+   ctx->Const.MaxVertexTextureImageUnits = BRW_MAX_TEX_UNIT;
    ctx->Const.MaxCombinedTextureImageUnits =
       ctx->Const.MaxVertexTextureImageUnits +
       ctx->Const.MaxTextureImageUnits;
@@ -102,14 +123,43 @@ brwCreateContext(int api,
 	   ctx->Const.MaxTextureLevels = MAX_TEXTURE_LEVELS;
    ctx->Const.Max3DTextureLevels = 9;
    ctx->Const.MaxCubeTextureLevels = 12;
-   /* minimum maximum.  Users are likely to run into memory problems
-    * even at this size, since 64 * 2048 * 2048 * 4 = 1GB and we can't
-    * address that much.
-    */
-   ctx->Const.MaxArrayTextureLayers = 64;
+
+   if (intel->gen >= 7)
+      ctx->Const.MaxArrayTextureLayers = 2048;
+   else
+      ctx->Const.MaxArrayTextureLayers = 512;
+
    ctx->Const.MaxTextureRectSize = (1<<12);
    
    ctx->Const.MaxTextureMaxAnisotropy = 16.0;
+
+   /* Hardware only supports a limited number of transform feedback buffers.
+    * So we need to override the Mesa default (which is based only on software
+    * limits).
+    */
+   ctx->Const.MaxTransformFeedbackSeparateAttribs = BRW_MAX_SOL_BUFFERS;
+
+   /* On Gen6, in the worst case, we use up one binding table entry per
+    * transform feedback component (see comments above the definition of
+    * BRW_MAX_SOL_BINDINGS, in brw_context.h), so we need to advertise a value
+    * for MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS equal to
+    * BRW_MAX_SOL_BINDINGS.
+    *
+    * In "separate components" mode, we need to divide this value by
+    * BRW_MAX_SOL_BUFFERS, so that the total number of binding table entries
+    * used up by all buffers will not exceed BRW_MAX_SOL_BINDINGS.
+    */
+   ctx->Const.MaxTransformFeedbackInterleavedComponents = BRW_MAX_SOL_BINDINGS;
+   ctx->Const.MaxTransformFeedbackSeparateComponents =
+      BRW_MAX_SOL_BINDINGS / BRW_MAX_SOL_BUFFERS;
+
+   /* Claim to support 4 multisamples, even though we don't.  This is a
+    * requirement for GL 3.0 that we missed until the last minute.  Go ahead and
+    * claim the limit, so that usage of the 4 multisample-based API that is
+    * guaranteed in 3.0 succeeds, even though we only rasterize a single sample.
+    */
+   if (intel->gen >= 6)
+      ctx->Const.MaxSamples = 4;
 
    /* if conformance mode is set, swrast can handle any size AA point */
    ctx->Const.MaxPointSizeAA = 255.0;
@@ -217,13 +267,16 @@ brwCreateContext(int api,
 	 brw->max_gs_threads = 60;
 	 brw->urb.size = 64;            /* volume 5c.5 section 5.1 */
 	 brw->urb.max_vs_entries = 256; /* volume 2a (see 3DSTATE_URB) */
+	 brw->urb.max_gs_entries = 256;
       } else {
 	 brw->max_wm_threads = 40;
 	 brw->max_vs_threads = 24;
 	 brw->max_gs_threads = 21; /* conservative; 24 if rendering disabled */
 	 brw->urb.size = 32;            /* volume 5c.5 section 5.1 */
 	 brw->urb.max_vs_entries = 128; /* volume 2a (see 3DSTATE_URB) */
+	 brw->urb.max_gs_entries = 256;
       }
+      brw->urb.gen6_gs_previously_active = false;
    } else if (intel->gen == 5) {
       brw->urb.size = 1024;
       brw->max_vs_threads = 72;
@@ -259,15 +312,12 @@ brwCreateContext(int api,
 
    brw_draw_init( brw );
 
-   brw->new_vs_backend = (getenv("INTEL_OLD_VS") == NULL);
+   brw->precompile = driQueryOptionb(&intel->optionCache, "shader_precompile");
 
-   /* If we're using the new shader backend, we require integer uniforms
-    * stored as actual integers.
-    */
-   if (brw->new_vs_backend) {
-      ctx->Const.NativeIntegers = true;
-      ctx->Const.UniformBooleanTrue = 1;
-   }
+   ctx->Const.NativeIntegers = true;
+   ctx->Const.UniformBooleanTrue = 1;
+
+   ctx->Const.ForceGLSLExtensionsWarn = driQueryOptionb(&intel->optionCache, "force_glsl_extensions_warn");
 
    return true;
 }

@@ -290,6 +290,8 @@ static uint32_t r600_translate_colorswap(enum pipe_format format)
 	case PIPE_FORMAT_L8_SRGB:
 	case PIPE_FORMAT_R8_UNORM:
 	case PIPE_FORMAT_R8_SNORM:
+	case PIPE_FORMAT_R8_UINT:
+	case PIPE_FORMAT_R8_SINT:
 		return V_0280A0_SWAP_STD;
 
 	case PIPE_FORMAT_L4A4_UNORM:
@@ -369,6 +371,7 @@ static uint32_t r600_translate_colorswap(enum pipe_format format)
 		return V_0280A0_SWAP_STD;
 
 	case PIPE_FORMAT_B10G10R10A2_UNORM:
+	case PIPE_FORMAT_B10G10R10A2_UINT:
 		return V_0280A0_SWAP_ALT;
 
 	case PIPE_FORMAT_R11G11B10_FLOAT:
@@ -491,6 +494,7 @@ static uint32_t r600_translate_colorformat(enum pipe_format format)
 	case PIPE_FORMAT_R10G10B10A2_UNORM:
 	case PIPE_FORMAT_R10G10B10X2_SNORM:
 	case PIPE_FORMAT_B10G10R10A2_UNORM:
+	case PIPE_FORMAT_B10G10R10A2_UINT:
 	case PIPE_FORMAT_R10SG10SB10SA2U_NORM:
 		return V_0280A0_COLOR_2_10_10_10;
 
@@ -504,6 +508,10 @@ static uint32_t r600_translate_colorformat(enum pipe_format format)
 
 	case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
 		return V_0280A0_COLOR_X24_8_32_FLOAT;
+
+	case PIPE_FORMAT_R32_UINT:
+	case PIPE_FORMAT_R32_SINT:
+		return V_0280A0_COLOR_32;
 
 	case PIPE_FORMAT_R32_FLOAT:
 	case PIPE_FORMAT_Z32_FLOAT:
@@ -931,7 +939,7 @@ static void *r600_create_dsa_state(struct pipe_context *ctx,
 }
 
 static void *r600_create_rs_state(struct pipe_context *ctx,
-					const struct pipe_rasterizer_state *state)
+				  const struct pipe_rasterizer_state *state)
 {
 	struct r600_pipe_context *rctx = (struct r600_pipe_context *)ctx;
 	struct r600_pipe_rasterizer *rs = CALLOC_STRUCT(r600_pipe_rasterizer);
@@ -950,6 +958,8 @@ static void *r600_create_rs_state(struct pipe_context *ctx,
 	rs->clamp_fragment_color = state->clamp_fragment_color;
 	rs->flatshade = state->flatshade;
 	rs->sprite_coord_enable = state->sprite_coord_enable;
+	rs->two_side = state->light_twoside;
+	rs->clip_plane_enable = state->clip_plane_enable;
 
 	clip_rule = state->scissor ? 0xAAAA : 0xFFFF;
 	/* offset */
@@ -976,8 +986,8 @@ static void *r600_create_rs_state(struct pipe_context *ctx,
 				state->fill_back != PIPE_POLYGON_MODE_FILL);
 	r600_pipe_state_add_reg(rstate, R_028814_PA_SU_SC_MODE_CNTL,
 		S_028814_PROVOKING_VTX_LAST(prov_vtx) |
-		S_028814_CULL_FRONT((state->cull_face & PIPE_FACE_FRONT) ? 1 : 0) |
-		S_028814_CULL_BACK((state->cull_face & PIPE_FACE_BACK) ? 1 : 0) |
+		S_028814_CULL_FRONT(state->rasterizer_discard || (state->cull_face & PIPE_FACE_FRONT) ? 1 : 0) |
+		S_028814_CULL_BACK(state->rasterizer_discard || (state->cull_face & PIPE_FACE_BACK) ? 1 : 0) |
 		S_028814_FACE(!state->front_ccw) |
 		S_028814_POLY_OFFSET_FRONT_ENABLE(state->offset_tri) |
 		S_028814_POLY_OFFSET_BACK_ENABLE(state->offset_tri) |
@@ -986,8 +996,8 @@ static void *r600_create_rs_state(struct pipe_context *ctx,
 		S_028814_POLYMODE_FRONT_PTYPE(r600_translate_fill(state->fill_front)) |
 		S_028814_POLYMODE_BACK_PTYPE(r600_translate_fill(state->fill_back)), 0xFFFFFFFF, NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_02881C_PA_CL_VS_OUT_CNTL,
-			S_02881C_USE_VTX_POINT_SIZE(state->point_size_per_vertex) |
-			S_02881C_VS_OUT_MISC_VEC_ENA(state->point_size_per_vertex), 0xFFFFFFFF, NULL, 0);
+			S_02881C_USE_VTX_POINT_SIZE(state->point_size_per_vertex),
+			S_02881C_USE_VTX_POINT_SIZE(1), NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_028820_PA_CL_NANINF_CNTL, 0x00000000, 0xFFFFFFFF, NULL, 0);
 	/* point size 12.4 fixed point */
 	tmp = (unsigned)(state->point_size * 8.0);
@@ -1025,7 +1035,11 @@ static void *r600_create_rs_state(struct pipe_context *ctx,
 	r600_pipe_state_add_reg(rstate, R_028C18_PA_CL_GB_HORZ_DISC_ADJ, 0x3F800000, 0xFFFFFFFF, NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_028DFC_PA_SU_POLY_OFFSET_CLAMP, fui(state->offset_clamp), 0xFFFFFFFF, NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_02820C_PA_SC_CLIPRECT_RULE, clip_rule, 0xFFFFFFFF, NULL, 0);
-
+	r600_pipe_state_add_reg(rstate, R_028810_PA_CL_CLIP_CNTL,
+			S_028810_PS_UCP_MODE(3) | S_028810_ZCLIP_NEAR_DISABLE(!state->depth_clip) |
+			S_028810_ZCLIP_FAR_DISABLE(!state->depth_clip),
+			S_028810_PS_UCP_MODE(3) | S_028810_ZCLIP_NEAR_DISABLE(1) |
+			S_028810_ZCLIP_FAR_DISABLE(1), NULL, 0);
 	return rstate;
 }
 
@@ -1303,13 +1317,14 @@ static void r600_set_clip_state(struct pipe_context *ctx,
 {
 	struct r600_pipe_context *rctx = (struct r600_pipe_context *)ctx;
 	struct r600_pipe_state *rstate = CALLOC_STRUCT(r600_pipe_state);
+	struct pipe_resource * cbuf;
 
 	if (rstate == NULL)
 		return;
 
 	rctx->clip = *state;
 	rstate->id = R600_PIPE_STATE_CLIP;
-	for (int i = 0; i < state->nr; i++) {
+	for (int i = 0; i < 6; i++) {
 		r600_pipe_state_add_reg(rstate,
 					R_028E20_PA_CL_UCP0_X + i * 16,
 					fui(state->ucp[i][0]), 0xFFFFFFFF, NULL, 0);
@@ -1323,14 +1338,17 @@ static void r600_set_clip_state(struct pipe_context *ctx,
 					R_028E2C_PA_CL_UCP0_W + i * 16,
 					fui(state->ucp[i][3]), 0xFFFFFFFF, NULL, 0);
 	}
-	r600_pipe_state_add_reg(rstate, R_028810_PA_CL_CLIP_CNTL,
-			S_028810_PS_UCP_MODE(3) | ((1 << state->nr) - 1) |
-			S_028810_ZCLIP_NEAR_DISABLE(state->depth_clamp) |
-			S_028810_ZCLIP_FAR_DISABLE(state->depth_clamp), 0xFFFFFFFF, NULL, 0);
 
 	free(rctx->states[R600_PIPE_STATE_CLIP]);
 	rctx->states[R600_PIPE_STATE_CLIP] = rstate;
 	r600_context_pipe_state_set(&rctx->ctx, rstate);
+
+	cbuf = pipe_user_buffer_create(ctx->screen,
+                                   state->ucp,
+                                   4*4*8, /* 8*4 floats */
+                                   PIPE_BIND_CONSTANT_BUFFER);
+	r600_set_constant_buffer(ctx, PIPE_SHADER_VERTEX, 1, cbuf);
+	pipe_resource_reference(&cbuf, NULL);
 }
 
 static void r600_set_polygon_stipple(struct pipe_context *ctx,
@@ -1756,6 +1774,9 @@ void r600_init_state_functions(struct r600_pipe_context *rctx)
 	rctx->context.sampler_view_destroy = r600_sampler_view_destroy;
 	rctx->context.redefine_user_buffer = u_default_redefine_user_buffer;
 	rctx->context.texture_barrier = r600_texture_barrier;
+	rctx->context.create_stream_output_target = r600_create_so_target;
+	rctx->context.stream_output_target_destroy = r600_so_target_destroy;
+	rctx->context.set_stream_output_targets = r600_set_so_targets;
 }
 
 void r600_adjust_gprs(struct r600_pipe_context *rctx)
@@ -2062,7 +2083,7 @@ void r600_pipe_shader_ps(struct pipe_context *ctx, struct r600_pipe_shader *shad
 	struct r600_shader *rshader = &shader->shader;
 	unsigned i, exports_ps, num_cout, spi_ps_in_control_0, spi_input_z, spi_ps_in_control_1, db_shader_control;
 	int pos_index = -1, face_index = -1;
-	unsigned tmp, sid;
+	unsigned tmp, sid, ufi = 0;
 
 	rstate->nregs = 0;
 
@@ -2140,6 +2161,10 @@ void r600_pipe_shader_ps(struct pipe_context *ctx, struct r600_pipe_shader *shad
 			S_0286D0_FRONT_FACE_ADDR(rshader->input[face_index].gpr);
 	}
 
+	/* HW bug in original R600 */
+	if (rctx->family == CHIP_R600)
+		ufi = 1;
+
 	r600_pipe_state_add_reg(rstate, R_0286CC_SPI_PS_IN_CONTROL_0, spi_ps_in_control_0, 0xFFFFFFFF, NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_0286D0_SPI_PS_IN_CONTROL_1, spi_ps_in_control_1, 0xFFFFFFFF, NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_0286D8_SPI_INPUT_Z, spi_input_z, 0xFFFFFFFF, NULL, 0);
@@ -2149,7 +2174,8 @@ void r600_pipe_shader_ps(struct pipe_context *ctx, struct r600_pipe_shader *shad
 	r600_pipe_state_add_reg(rstate,
 				R_028850_SQ_PGM_RESOURCES_PS,
 				S_028850_NUM_GPRS(rshader->bc.ngpr) |
-				S_028850_STACK_SIZE(rshader->bc.nstack),
+				S_028850_STACK_SIZE(rshader->bc.nstack) |
+				S_028850_UNCACHED_FIRST_INST(ufi),
 				0xFFFFFFFF, NULL, 0);
 	r600_pipe_state_add_reg(rstate,
 				R_028854_SQ_PGM_EXPORTS_PS,
@@ -2227,6 +2253,16 @@ void r600_pipe_shader_vs(struct pipe_context *ctx, struct r600_pipe_shader *shad
 	r600_pipe_state_add_reg(rstate,
 				R_03E200_SQ_LOOP_CONST_0 + (32 * 4), 0x01000FFF,
 				0xFFFFFFFF, NULL, 0);
+
+	r600_pipe_state_add_reg(rstate,
+				R_02881C_PA_CL_VS_OUT_CNTL,
+				S_02881C_VS_OUT_CCDIST0_VEC_ENA((rshader->clip_dist_write & 0x0F) != 0) |
+				S_02881C_VS_OUT_CCDIST1_VEC_ENA((rshader->clip_dist_write & 0xF0) != 0) |
+				S_02881C_VS_OUT_MISC_VEC_ENA(rshader->vs_out_misc_write),
+				S_02881C_VS_OUT_CCDIST0_VEC_ENA(1) |
+				S_02881C_VS_OUT_CCDIST1_VEC_ENA(1) |
+				S_02881C_VS_OUT_MISC_VEC_ENA(1),
+				NULL, 0);
 }
 
 void r600_fetch_shader(struct pipe_context *ctx,

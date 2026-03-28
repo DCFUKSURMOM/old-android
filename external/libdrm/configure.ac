@@ -20,7 +20,7 @@
 
 AC_PREREQ([2.63])
 AC_INIT([libdrm],
-        [2.4.26],
+        [2.4.33],
         [https://bugs.freedesktop.org/enter_bug.cgi?product=DRI],
         [libdrm])
 
@@ -50,10 +50,6 @@ LT_INIT([disable-static])
 PKG_CHECK_MODULES(PTHREADSTUBS, pthread-stubs)
 AC_SUBST(PTHREADSTUBS_CFLAGS)
 AC_SUBST(PTHREADSTUBS_LIBS)
-
-PKG_CHECK_MODULES(PCIACCESS, [pciaccess >= 0.10])
-AC_SUBST(PCIACCESS_CFLAGS)
-AC_SUBST(PCIACCESS_LIBS)
 
 pkgconfigdir=${libdir}/pkgconfig
 AC_SUBST(pkgconfigdir)
@@ -87,6 +83,10 @@ AC_ARG_ENABLE(nouveau-experimental-api,
 	      [Enable support for nouveau's experimental API (default: disabled)]),
 	      [NOUVEAU=$enableval], [NOUVEAU=no])
 
+AC_ARG_ENABLE(omap-experimental-api,
+	      AS_HELP_STRING([--enable-omap-experimental-api],
+	      [Enable support for OMAP's experimental API (default: disabled)]),
+	      [OMAP=$enableval], [OMAP=no])
 
 dnl ===========================================================================
 dnl check compiler flags
@@ -113,6 +113,8 @@ AC_CHECK_FUNCS([clock_gettime], [CLOCK_LIB=],
                [AC_CHECK_LIB([rt], [clock_gettime], [CLOCK_LIB=-lrt],
                              [AC_MSG_ERROR([Couldn't find clock_gettime])])])
 AC_SUBST([CLOCK_LIB])
+
+AC_CHECK_FUNCS([open_memstream], [HAVE_OPEN_MEMSTREAM=yes])
 
 dnl Use lots of warning flags with with gcc and compatible compilers
 
@@ -184,6 +186,11 @@ if test "x$NOUVEAU" = xyes; then
 	AC_DEFINE(HAVE_NOUVEAU, 1, [Have nouveau (nvidia) support])
 fi
 
+AM_CONDITIONAL(HAVE_OMAP, [test "x$OMAP" = xyes])
+if test "x$OMAP" = xyes; then
+	AC_DEFINE(HAVE_OMAP, 1, [Have OMAP support])
+fi
+
 PKG_CHECK_MODULES(CAIRO, cairo, [HAVE_CAIRO=yes], [HAVE_CAIRO=no])
 if test "x$HAVE_CAIRO" = xyes; then
 	AC_DEFINE(HAVE_CAIRO, 1, [Have cairo support])
@@ -248,12 +255,26 @@ if test "x$INTEL" != "xno" -o "x$RADEON" != "xno"; then
 
     else
            if test "x$INTEL" != "xno"; then
-                   INTEL=yes
+                   case $host_cpu in
+                           i?86|x86_64) INTEL=yes ;;
+                           *) INTEL=no ;;
+                   esac
            fi
            if test "x$RADEON" != "xno"; then
                    RADEON=yes
            fi
     fi
+fi
+
+if test "x$INTEL" != "xno"; then
+	PKG_CHECK_MODULES(PCIACCESS, [pciaccess >= 0.10])
+fi
+AC_SUBST(PCIACCESS_CFLAGS)
+AC_SUBST(PCIACCESS_LIBS)
+
+PKG_CHECK_MODULES(VALGRIND, [valgrind], [have_valgrind=yes], [have_valgrind=no])
+if test "x$have_valgrind" = "xyes"; then
+	AC_DEFINE([HAVE_VALGRIND], 1, [Use valgrind intrinsics to suppress false warnings])
 fi
 
 AM_CONDITIONAL(HAVE_INTEL, [test "x$INTEL" != "xno"])
@@ -279,10 +300,13 @@ AC_CONFIG_FILES([
 	radeon/libdrm_radeon.pc
 	nouveau/Makefile
 	nouveau/libdrm_nouveau.pc
+	omap/Makefile
+	omap/libdrm_omap.pc
 	tests/Makefile
 	tests/modeprint/Makefile
 	tests/modetest/Makefile
 	tests/kmstest/Makefile
+	tests/radeon/Makefile
 	tests/vbltest/Makefile
 	include/Makefile
 	include/drm/Makefile
@@ -297,4 +321,5 @@ echo "  Intel API      $INTEL"
 echo "  vmwgfx API     $VMWGFX"
 echo "  Radeon API     $RADEON"
 echo "  Nouveau API    $NOUVEAU"
+echo "  OMAP API       $OMAP"
 echo ""

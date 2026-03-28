@@ -1788,6 +1788,9 @@ glXChooseFBConfig(Display *dpy, int screen,
 {
    XMesaVisual xmvis;
 
+   /* register ourselves as an extension on this display */
+   register_with_display(dpy);
+
    if (!attribList || !attribList[0]) {
       /* return list of all configs (per GLX_SGIX_fbconfig spec) */
       return glXGetFBConfigs(dpy, screen, nitems);
@@ -2665,7 +2668,7 @@ glXCreateContextAttribsARB(Display *dpy, GLXFBConfig config,
                                 GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB);
 
    /* parse attrib_list */
-   for (i = 0; !done && attrib_list[i]; i++) {
+   for (i = 0; !done && attrib_list && attrib_list[i]; i++) {
       switch (attrib_list[i]) {
       case GLX_CONTEXT_MAJOR_VERSION_ARB:
          majorVersion = attrib_list[++i];

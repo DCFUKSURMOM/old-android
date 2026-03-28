@@ -15,6 +15,7 @@ i965_C_SOURCES := \
 	intel_fbo.c \
 	intel_mipmap_tree.c \
 	intel_regions.c \
+	intel_resolve_map.c \
 	intel_screen.c \
 	intel_span.c \
 	intel_pixel.c \
@@ -92,6 +93,7 @@ i965_C_SOURCES := \
 	gen6_sampler_state.c \
 	gen6_scissor_state.c \
 	gen6_sf_state.c \
+        gen6_sol.c \
 	gen6_urb.c \
 	gen6_viewport_state.c \
 	gen6_vs_state.c \
@@ -99,9 +101,11 @@ i965_C_SOURCES := \
 	gen7_cc_state.c \
 	gen7_clip_state.c \
 	gen7_disable.c \
+	gen7_hiz.c \
 	gen7_misc_state.c \
 	gen7_sampler_state.c \
 	gen7_sf_state.c \
+	gen7_sol_state.c \
 	gen7_urb.c \
 	gen7_viewport_state.c \
 	gen7_vs_state.c \

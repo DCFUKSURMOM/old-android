@@ -101,10 +101,10 @@ struct brw_glsl_call;
 
 
 #define BRW_EU_MAX_INSN_STACK 5
-#define BRW_EU_MAX_INSN 10000
 
 struct brw_compile {
-   struct brw_instruction store[BRW_EU_MAX_INSN];
+   struct brw_instruction *store;
+   int store_size;
    GLuint nr_insn;
 
    void *mem_ctx;
@@ -123,10 +123,27 @@ struct brw_compile {
    /* Control flow stacks:
     * - if_stack contains IF and ELSE instructions which must be patched
     *   (and popped) once the matching ENDIF instruction is encountered.
+    *
+    *   Just store the instruction pointer(an index).
     */
-   struct brw_instruction **if_stack;
+   int *if_stack;
    int if_stack_depth;
    int if_stack_array_size;
+
+   /**
+    * loop_stack contains the instruction pointers of the starts of loops which
+    * must be patched (and popped) once the matching WHILE instruction is
+    * encountered.
+    */
+   int *loop_stack;
+   /**
+    * pre-gen6, the BREAK and CONT instructions had to tell how many IF/ENDIF
+    * blocks they were popping out of, to fix up the mask stack.  This tracks
+    * the IF/ENDIF nesting in each current nested loop level.
+    */
+   int *if_depth_in_loop;
+   int loop_stack_depth;
+   int loop_stack_array_size;
 
    struct brw_glsl_label *first_label;  /**< linked list of labels */
    struct brw_glsl_call *first_call;    /**< linked list of CALs */
@@ -650,6 +667,11 @@ static INLINE struct brw_reg get_element_ud( struct brw_reg reg, GLuint elt )
    return vec1(suboffset(retype(reg, BRW_REGISTER_TYPE_UD), elt));
 }
 
+static INLINE struct brw_reg get_element_d( struct brw_reg reg, GLuint elt )
+{
+   return vec1(suboffset(retype(reg, BRW_REGISTER_TYPE_D), elt));
+}
+
 
 static INLINE struct brw_reg brw_swizzle( struct brw_reg reg,
 					    GLuint x,
@@ -865,6 +887,17 @@ ROUND(RNDE)
 
 /* Helpers for SEND instruction:
  */
+void brw_set_sampler_message(struct brw_compile *p,
+                             struct brw_instruction *insn,
+                             GLuint binding_table_index,
+                             GLuint sampler,
+                             GLuint msg_type,
+                             GLuint response_length,
+                             GLuint msg_length,
+                             GLuint header_present,
+                             GLuint simd_mode,
+                             GLuint return_format);
+
 void brw_set_dp_read_message(struct brw_compile *p,
 			     struct brw_instruction *insn,
 			     GLuint binding_table_index,
@@ -907,6 +940,13 @@ void brw_ff_sync(struct brw_compile *p,
 		   GLuint response_length,
 		   bool eot);
 
+void brw_svb_write(struct brw_compile *p,
+                   struct brw_reg dest,
+                   GLuint msg_reg_nr,
+                   struct brw_reg src0,
+                   GLuint binding_table_index,
+                   bool   send_commit_msg);
+
 void brw_fb_WRITE(struct brw_compile *p,
 		  int dispatch_width,
 		   GLuint msg_reg_nr,
@@ -928,7 +968,8 @@ void brw_SAMPLE(struct brw_compile *p,
 		GLuint response_length,
 		GLuint msg_length,
 		GLuint header_present,
-		GLuint simd_mode);
+		GLuint simd_mode,
+		GLuint return_format);
 
 void brw_math_16( struct brw_compile *p,
 		  struct brw_reg dest,
@@ -1002,17 +1043,14 @@ void brw_ENDIF(struct brw_compile *p);
 struct brw_instruction *brw_DO(struct brw_compile *p,
 			       GLuint execute_size);
 
-struct brw_instruction *brw_WHILE(struct brw_compile *p, 
-	       struct brw_instruction *patch_insn);
+struct brw_instruction *brw_WHILE(struct brw_compile *p);
 
-struct brw_instruction *brw_BREAK(struct brw_compile *p, int pop_count);
-struct brw_instruction *brw_CONT(struct brw_compile *p, int pop_count);
-struct brw_instruction *gen6_CONT(struct brw_compile *p,
-				  struct brw_instruction *do_insn);
+struct brw_instruction *brw_BREAK(struct brw_compile *p);
+struct brw_instruction *brw_CONT(struct brw_compile *p);
+struct brw_instruction *gen6_CONT(struct brw_compile *p);
 /* Forward jumps:
  */
-void brw_land_fwd_jump(struct brw_compile *p, 
-		       struct brw_instruction *jmp_insn);
+void brw_land_fwd_jump(struct brw_compile *p, int jmp_insn_idx);
 
 
 

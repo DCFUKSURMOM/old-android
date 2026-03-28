@@ -54,6 +54,11 @@
 #include "GL/glext.h"
 
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 /**
  * GL_FIXED is defined in glext.h version 64 but these typedefs aren't (yet).
  */
@@ -134,6 +139,10 @@ typedef void *GLeglImageOES;
 #define GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI 0x8837
 #endif
 
+#ifndef GL_OES_compressed_ETC1_RGB8_texture
+#define GL_ETC1_RGB8_OES                                        0x8D64
+#endif
+
 
 /**
  * Internal token to represent a GLSL shader program (a collection of
@@ -171,5 +180,10 @@ typedef void *GLeglImageOES;
 #define GLX_SWAP_UNDEFINED_OML             0x8063
 
 #define GLX_DONT_CARE                      0xFFFFFFFF
+
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* GLHEADER_H */

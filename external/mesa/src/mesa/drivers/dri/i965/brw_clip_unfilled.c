@@ -273,7 +273,6 @@ static void emit_lines(struct brw_clip_compile *c,
 		       bool do_offset)
 {
    struct brw_compile *p = &c->func;
-   struct brw_instruction *loop;
    struct brw_indirect v0 = brw_indirect(0, 0);
    struct brw_indirect v1 = brw_indirect(1, 0);
    struct brw_indirect v0ptr = brw_indirect(2, 0);
@@ -285,7 +284,7 @@ static void emit_lines(struct brw_clip_compile *c,
       brw_MOV(p, c->reg.loopcount, c->reg.nr_verts);
       brw_MOV(p, get_addr_reg(v0ptr), brw_address(c->reg.inlist));
 
-      loop = brw_DO(p, BRW_EXECUTE_1);
+      brw_DO(p, BRW_EXECUTE_1);
       {
 	 brw_MOV(p, get_addr_reg(v0), deref_1uw(v0ptr, 0));
 	 brw_ADD(p, get_addr_reg(v0ptr), get_addr_reg(v0ptr), brw_imm_uw(2));
@@ -295,7 +294,7 @@ static void emit_lines(struct brw_clip_compile *c,
 	 brw_set_conditionalmod(p, BRW_CONDITIONAL_G);
 	 brw_ADD(p, c->reg.loopcount, c->reg.loopcount, brw_imm_d(-1));
       }
-      brw_WHILE(p, loop);
+      brw_WHILE(p);
    }
 
    /* v1ptr = &inlist[nr_verts]
@@ -307,7 +306,7 @@ static void emit_lines(struct brw_clip_compile *c,
    brw_ADD(p, get_addr_reg(v1ptr), get_addr_reg(v1ptr), retype(c->reg.nr_verts, BRW_REGISTER_TYPE_UW));
    brw_MOV(p, deref_1uw(v1ptr, 0), deref_1uw(v0ptr, 0));
 
-   loop = brw_DO(p, BRW_EXECUTE_1);
+   brw_DO(p, BRW_EXECUTE_1);
    {
       brw_MOV(p, get_addr_reg(v0), deref_1uw(v0ptr, 0));
       brw_MOV(p, get_addr_reg(v1), deref_1uw(v0ptr, 2));
@@ -321,15 +320,19 @@ static void emit_lines(struct brw_clip_compile *c,
 	      brw_imm_f(0));
       brw_IF(p, BRW_EXECUTE_1);
       {
-	 brw_clip_emit_vue(c, v0, 1, 0, (_3DPRIM_LINESTRIP << 2) | R02_PRIM_START);
-	 brw_clip_emit_vue(c, v1, 1, 0, (_3DPRIM_LINESTRIP << 2) | R02_PRIM_END);
+	 brw_clip_emit_vue(c, v0, 1, 0,
+                           (_3DPRIM_LINESTRIP << URB_WRITE_PRIM_TYPE_SHIFT)
+                           | URB_WRITE_PRIM_START);
+	 brw_clip_emit_vue(c, v1, 1, 0,
+                           (_3DPRIM_LINESTRIP << URB_WRITE_PRIM_TYPE_SHIFT)
+                           | URB_WRITE_PRIM_END);
       }
       brw_ENDIF(p);
 
       brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
       brw_ADD(p, c->reg.loopcount, c->reg.loopcount, brw_imm_d(-1));
    }
-   brw_WHILE(p, loop);
+   brw_WHILE(p);
 }
 
 
@@ -338,7 +341,6 @@ static void emit_points(struct brw_clip_compile *c,
 			bool do_offset )
 {
    struct brw_compile *p = &c->func;
-   struct brw_instruction *loop;
 
    struct brw_indirect v0 = brw_indirect(0, 0);
    struct brw_indirect v0ptr = brw_indirect(2, 0);
@@ -346,7 +348,7 @@ static void emit_points(struct brw_clip_compile *c,
    brw_MOV(p, c->reg.loopcount, c->reg.nr_verts);
    brw_MOV(p, get_addr_reg(v0ptr), brw_address(c->reg.inlist));
 
-   loop = brw_DO(p, BRW_EXECUTE_1);
+   brw_DO(p, BRW_EXECUTE_1);
    {
       brw_MOV(p, get_addr_reg(v0), deref_1uw(v0ptr, 0));
       brw_ADD(p, get_addr_reg(v0ptr), get_addr_reg(v0ptr), brw_imm_uw(2));
@@ -363,14 +365,16 @@ static void emit_points(struct brw_clip_compile *c,
 	 if (do_offset)
 	    apply_one_offset(c, v0);
 
-	 brw_clip_emit_vue(c, v0, 1, 0, (_3DPRIM_POINTLIST << 2) | R02_PRIM_START | R02_PRIM_END);
+	 brw_clip_emit_vue(c, v0, 1, 0,
+                           (_3DPRIM_POINTLIST << URB_WRITE_PRIM_TYPE_SHIFT)
+                           | URB_WRITE_PRIM_START | URB_WRITE_PRIM_END);
       }
       brw_ENDIF(p);
 
       brw_set_conditionalmod(p, BRW_CONDITIONAL_NZ);
       brw_ADD(p, c->reg.loopcount, c->reg.loopcount, brw_imm_d(-1));
    }
-   brw_WHILE(p, loop);
+   brw_WHILE(p);
 }
 
 

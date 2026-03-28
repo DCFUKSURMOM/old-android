@@ -20,6 +20,7 @@ LIBGLSL_CXX_SOURCES := \
 	ast_function.cpp \
 	ast_to_hir.cpp \
 	ast_type.cpp \
+	builtin_variables.cpp \
 	glsl_parser_extras.cpp \
 	glsl_types.cpp \
 	glsl_symbol_table.cpp \
@@ -40,7 +41,6 @@ LIBGLSL_CXX_SOURCES := \
 	ir_rvalue_visitor.cpp \
 	ir_set_program_inouts.cpp \
 	ir_validate.cpp \
-	ir_variable.cpp \
 	ir_variable_refcount.cpp \
 	linker.cpp \
 	link_functions.cpp \
@@ -60,6 +60,7 @@ LIBGLSL_CXX_SOURCES := \
 	lower_vec_index_to_cond_assign.cpp \
 	lower_vec_index_to_swizzle.cpp \
 	lower_vector.cpp \
+	lower_output_reads.cpp \
 	opt_algebraic.cpp \
 	opt_constant_folding.cpp \
 	opt_constant_propagation.cpp \

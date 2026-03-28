@@ -25,11 +25,13 @@
 
 #include "main/glheader.h"
 #include "main/imports.h"
+#include "main/accum.h"
 #include "main/arrayobj.h"
 #include "main/context.h"
 #include "main/framebuffer.h"
 #include "main/mipmap.h"
 #include "main/queryobj.h"
+#include "main/readpix.h"
 #include "main/renderbuffer.h"
 #include "main/shaderobj.h"
 #include "main/texcompress.h"
@@ -48,6 +50,7 @@
 #include "program/program.h"
 #include "tnl/tnl.h"
 #include "swrast/swrast.h"
+#include "swrast/s_renderbuffer.h"
 
 #include "driverfuncs.h"
 #include "meta.h"
@@ -79,10 +82,10 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
 
    /* framebuffer/image functions */
    driver->Clear = _swrast_Clear;
-   driver->Accum = _swrast_Accum;
+   driver->Accum = _mesa_accum;
    driver->RasterPos = _tnl_RasterPos;
    driver->DrawPixels = _swrast_DrawPixels;
-   driver->ReadPixels = _swrast_ReadPixels;
+   driver->ReadPixels = _mesa_readpixels;
    driver->CopyPixels = _swrast_CopyPixels;
    driver->Bitmap = _swrast_Bitmap;
 
@@ -116,10 +119,6 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
    driver->FreeTextureImageBuffer = _swrast_free_texture_image_buffer;
    driver->MapTextureImage = _swrast_map_teximage;
    driver->UnmapTextureImage = _swrast_unmap_teximage;
-   driver->MapTexture = NULL;
-   driver->UnmapTexture = NULL;
-   driver->TextureMemCpy = memcpy;
-   driver->IsTextureResident = NULL;
    driver->DrawTex = _mesa_meta_DrawTex;
 
    /* Vertex/fragment programs */
@@ -179,9 +178,9 @@ _mesa_init_driver_functions(struct dd_function_table *driver)
    _mesa_init_sync_object_functions(driver);
 
    driver->NewFramebuffer = _mesa_new_framebuffer;
-   driver->NewRenderbuffer = _mesa_new_soft_renderbuffer;
-   driver->MapRenderbuffer = _mesa_map_soft_renderbuffer;
-   driver->UnmapRenderbuffer = _mesa_unmap_soft_renderbuffer;
+   driver->NewRenderbuffer = _swrast_new_soft_renderbuffer;
+   driver->MapRenderbuffer = _swrast_map_soft_renderbuffer;
+   driver->UnmapRenderbuffer = _swrast_unmap_soft_renderbuffer;
    driver->RenderTexture = _swrast_render_texture;
    driver->FinishRenderTexture = _swrast_finish_render_texture;
    driver->FramebufferRenderbuffer = _mesa_framebuffer_renderbuffer;

@@ -33,10 +33,12 @@
 #include "main/samplerobj.h"
 #include "main/state.h"
 #include "main/enums.h"
+#include "main/macros.h"
 #include "tnl/tnl.h"
 #include "vbo/vbo_context.h"
 #include "swrast/swrast.h"
 #include "swrast_setup/swrast_setup.h"
+#include "drivers/common/meta.h"
 
 #include "brw_draw.h"
 #include "brw_defines.h"
@@ -44,6 +46,9 @@
 #include "brw_state.h"
 
 #include "intel_batchbuffer.h"
+#include "intel_fbo.h"
+#include "intel_mipmap_tree.h"
+#include "intel_regions.h"
 
 #define FILE_DEBUG_FLAG DEBUG_PRIMS
 
@@ -117,9 +122,11 @@ static void brw_set_prim(struct brw_context *brw,
 static void gen6_set_prim(struct brw_context *brw,
                           const struct _mesa_prim *prim)
 {
-   uint32_t hw_prim = prim_to_hw_prim[prim->mode];
+   uint32_t hw_prim;
 
    DBG("PRIM: %s\n", _mesa_lookup_enum_by_nr(prim->mode));
+
+   hw_prim = prim_to_hw_prim[prim->mode];
 
    if (hw_prim != brw->primitive) {
       brw->primitive = hw_prim;
@@ -280,6 +287,113 @@ static void brw_merge_inputs( struct brw_context *brw,
       brw->state.dirty.brw |= BRW_NEW_INPUT_DIMENSIONS;
 }
 
+/*
+ * \brief Resolve buffers before drawing.
+ *
+ * Resolve the depth buffer's HiZ buffer and resolve the depth buffer of each
+ * enabled depth texture.
+ *
+ * (In the future, this will also perform MSAA resolves).
+ */
+static void
+brw_predraw_resolve_buffers(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->intel.ctx;
+   struct intel_context *intel = &brw->intel;
+   struct intel_renderbuffer *depth_irb;
+   struct intel_texture_object *tex_obj;
+
+   /* Resolve the depth buffer's HiZ buffer. */
+   depth_irb = intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
+   if (depth_irb && depth_irb->mt) {
+      intel_renderbuffer_resolve_hiz(intel, depth_irb);
+   }
+
+   /* Resolve depth buffer of each enabled depth texture. */
+   for (int i = 0; i < BRW_MAX_TEX_UNIT; i++) {
+      if (!ctx->Texture.Unit[i]._ReallyEnabled)
+	 continue;
+      tex_obj = intel_texture_object(ctx->Texture.Unit[i]._Current);
+      if (!tex_obj || !tex_obj->mt)
+	 continue;
+      intel_miptree_all_slices_resolve_depth(intel, tex_obj->mt);
+   }
+}
+
+/**
+ * \brief Call this after drawing to mark which buffers need resolving
+ *
+ * If the depth buffer was written to and if it has an accompanying HiZ
+ * buffer, then mark that it needs a depth resolve.
+ *
+ * (In the future, this will also mark needed MSAA resolves).
+ */
+static void brw_postdraw_set_buffers_need_resolve(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->intel.ctx;
+   struct gl_framebuffer *fb = ctx->DrawBuffer;
+   struct intel_renderbuffer *depth_irb =
+	 intel_get_renderbuffer(fb, BUFFER_DEPTH);
+
+   if (depth_irb && ctx->Depth.Mask) {
+      intel_renderbuffer_set_needs_depth_resolve(depth_irb);
+   }
+}
+
+static int
+verts_per_prim(GLenum mode)
+{
+   switch (mode) {
+   case GL_POINTS:
+      return 1;
+   case GL_LINE_STRIP:
+   case GL_LINE_LOOP:
+   case GL_LINES:
+      return 2;
+   case GL_TRIANGLE_STRIP:
+   case GL_TRIANGLE_FAN:
+   case GL_POLYGON:
+   case GL_TRIANGLES:
+   case GL_QUADS:
+   case GL_QUAD_STRIP:
+      return 3;
+   default:
+      _mesa_problem(NULL,
+		    "unknown prim type in transform feedback primitive count");
+      return 0;
+   }
+}
+
+/**
+ * Update internal counters based on the the drawing operation described in
+ * prim.
+ */
+static void
+brw_update_primitive_count(struct brw_context *brw,
+                           const struct _mesa_prim *prim)
+{
+   uint32_t count = count_tessellated_primitives(prim);
+   brw->sol.primitives_generated += count;
+   if (brw->intel.ctx.TransformFeedback.CurrentObject->Active &&
+       !brw->intel.ctx.TransformFeedback.CurrentObject->Paused) {
+      /* Update brw->sol.svbi_0_max_index to reflect the amount by which the
+       * hardware is going to increment SVBI 0 when this drawing operation
+       * occurs.  This is necessary because the kernel does not (yet) save and
+       * restore GPU registers when context switching, so we'll need to be
+       * able to reload SVBI 0 with the correct value in case we have to start
+       * a new batch buffer.
+       */
+      unsigned verts = verts_per_prim(prim->mode);
+      uint32_t space_avail =
+         (brw->sol.svbi_0_max_index - brw->sol.svbi_0_starting_index) / verts;
+      uint32_t primitives_written = MIN2 (space_avail, count);
+      brw->sol.svbi_0_starting_index += verts * primitives_written;
+
+      /* And update the TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN query. */
+      brw->sol.primitives_written += primitives_written;
+   }
+}
+
 /* May fail if out of video memory for texture or vbo upload, or on
  * fallback conditions.
  */
@@ -308,6 +422,11 @@ static bool brw_try_draw_prims( struct gl_context *ctx,
     * texture level other than level 0.
     */
    brw_validate_textures( brw );
+
+   /* Resolves must occur after updating state and finalizing textures but
+    * before setting up any hardware state for this draw call.
+    */
+   brw_predraw_resolve_buffers(brw);
 
    /* Bind all inputs, derive varying and size information:
     */
@@ -396,6 +515,9 @@ retry:
 	    }
 	 }
       }
+
+      if (!_mesa_meta_in_progress(ctx))
+         brw_update_primitive_count(brw, &prim[i]);
    }
 
    if (intel->always_flush_batch)
@@ -403,6 +525,7 @@ retry:
  out:
 
    brw_state_cache_check_size(brw);
+   brw_postdraw_set_buffers_need_resolve(brw);
 
    return retval;
 }
@@ -414,7 +537,8 @@ void brw_draw_prims( struct gl_context *ctx,
 		     const struct _mesa_index_buffer *ib,
 		     GLboolean index_bounds_valid,
 		     GLuint min_index,
-		     GLuint max_index )
+		     GLuint max_index,
+		     struct gl_transform_feedback_object *tfb_vertcount )
 {
    bool retval;
 

@@ -58,14 +58,6 @@ fs_visitor::visit(ir_variable *ir)
    if (variable_storage(ir))
       return;
 
-   if (strcmp(ir->name, "gl_FragColor") == 0) {
-      this->frag_color = ir;
-   } else if (strcmp(ir->name, "gl_FragData") == 0) {
-      this->frag_data = ir;
-   } else if (strcmp(ir->name, "gl_FragDepth") == 0) {
-      this->frag_depth = ir;
-   }
-
    if (ir->mode == ir_var_in) {
       if (!strcmp(ir->name, "gl_FragCoord")) {
 	 reg = emit_fragcoord_interpolation(ir);
@@ -77,9 +69,29 @@ fs_visitor::visit(ir_variable *ir)
       assert(reg);
       hash_table_insert(this->variable_ht, reg, ir);
       return;
-   }
+   } else if (ir->mode == ir_var_out) {
+      reg = new(this->mem_ctx) fs_reg(this, ir->type);
 
-   if (ir->mode == ir_var_uniform) {
+      if (ir->location == FRAG_RESULT_COLOR) {
+	 /* Writing gl_FragColor outputs to all color regions. */
+	 for (int i = 0; i < MAX2(c->key.nr_color_regions, 1); i++) {
+	    this->outputs[i] = *reg;
+	 }
+      } else if (ir->location == FRAG_RESULT_DEPTH) {
+	 this->frag_depth = ir;
+      } else {
+	 /* gl_FragData or a user-defined FS output */
+	 assert(ir->location >= FRAG_RESULT_DATA0 &&
+		ir->location < FRAG_RESULT_DATA0 + BRW_MAX_DRAW_BUFFERS);
+
+	 /* General color output. */
+	 for (unsigned int i = 0; i < MAX2(1, ir->type->length); i++) {
+	    int output = ir->location - FRAG_RESULT_DATA0 + i;
+	    this->outputs[output] = *reg;
+	    this->outputs[output].reg_offset += 4 * i;
+	 }
+      }
+   } else if (ir->mode == ir_var_uniform) {
       int param_index = c->prog_data.nr_params;
 
       if (c->dispatch_width == 16) {
@@ -294,11 +306,17 @@ fs_visitor::visit(ir_expression *ir)
       }
       break;
    case ir_binop_div:
+      if (intel->gen >= 7 && c->dispatch_width == 16)
+	 fail("16-wide INTDIV unsupported\n");
+
       /* Floating point should be lowered by DIV_TO_MUL_RCP in the compiler. */
       assert(ir->type->is_integer());
       emit_math(SHADER_OPCODE_INT_QUOTIENT, this->result, op[0], op[1]);
       break;
    case ir_binop_mod:
+      if (intel->gen >= 7 && c->dispatch_width == 16)
+	 fail("16-wide INTDIV unsupported\n");
+
       /* Floating point should be lowered by MOD_TO_FRACT in the compiler. */
       assert(ir->type->is_integer());
       emit_math(SHADER_OPCODE_INT_REMAINDER, this->result, op[0], op[1]);
@@ -546,6 +564,12 @@ fs_visitor::try_rewrite_rhs_to_dst(ir_assignment *ir,
        !src.equals(&last_rhs_inst->dst))
       return false;
 
+   /* If last_rhs_inst wrote a different number of components than our LHS,
+    * we can't safely rewrite it.
+    */
+   if (ir->lhs->type->vector_elements != last_rhs_inst->regs_written())
+      return false;
+
    /* Success!  Rewrite the instruction. */
    last_rhs_inst->dst = dst;
 
@@ -611,7 +635,7 @@ fs_visitor::emit_texture_gen4(ir_texture *ir, fs_reg dst, fs_reg coordinate,
       for (int i = 0; i < ir->coordinate->type->vector_elements; i++) {
 	 fs_inst *inst = emit(BRW_OPCODE_MOV,
 			      fs_reg(MRF, base_mrf + mlen + i), coordinate);
-	 if (i < 3 && c->key.gl_clamp_mask[i] & (1 << sampler))
+	 if (i < 3 && c->key.tex.gl_clamp_mask[i] & (1 << sampler))
 	    inst->saturate = true;
 
 	 coordinate.reg_offset++;
@@ -643,7 +667,7 @@ fs_visitor::emit_texture_gen4(ir_texture *ir, fs_reg dst, fs_reg coordinate,
       for (int i = 0; i < ir->coordinate->type->vector_elements; i++) {
 	 fs_inst *inst = emit(BRW_OPCODE_MOV, fs_reg(MRF, base_mrf + mlen + i),
 			      coordinate);
-	 if (i < 3 && c->key.gl_clamp_mask[i] & (1 << sampler))
+	 if (i < 3 && c->key.tex.gl_clamp_mask[i] & (1 << sampler))
 	    inst->saturate = true;
 	 coordinate.reg_offset++;
       }
@@ -706,7 +730,7 @@ fs_visitor::emit_texture_gen4(ir_texture *ir, fs_reg dst, fs_reg coordinate,
 						     base_mrf + mlen + i * 2,
 						     coordinate.type),
 			      coordinate);
-	 if (i < 3 && c->key.gl_clamp_mask[i] & (1 << sampler))
+	 if (i < 3 && c->key.tex.gl_clamp_mask[i] & (1 << sampler))
 	    inst->saturate = true;
 	 coordinate.reg_offset++;
       }
@@ -752,22 +776,22 @@ fs_visitor::emit_texture_gen4(ir_texture *ir, fs_reg dst, fs_reg coordinate,
    fs_inst *inst = NULL;
    switch (ir->op) {
    case ir_tex:
-      inst = emit(FS_OPCODE_TEX, dst);
+      inst = emit(SHADER_OPCODE_TEX, dst);
       break;
    case ir_txb:
       inst = emit(FS_OPCODE_TXB, dst);
       break;
    case ir_txl:
-      inst = emit(FS_OPCODE_TXL, dst);
+      inst = emit(SHADER_OPCODE_TXL, dst);
       break;
    case ir_txd:
-      inst = emit(FS_OPCODE_TXD, dst);
+      inst = emit(SHADER_OPCODE_TXD, dst);
       break;
    case ir_txs:
-      inst = emit(FS_OPCODE_TXS, dst);
+      inst = emit(SHADER_OPCODE_TXS, dst);
       break;
    case ir_txf:
-      inst = emit(FS_OPCODE_TXF, dst);
+      inst = emit(SHADER_OPCODE_TXF, dst);
       break;
    }
    inst->base_mrf = base_mrf;
@@ -818,7 +842,7 @@ fs_visitor::emit_texture_gen5(ir_texture *ir, fs_reg dst, fs_reg coordinate,
 			   fs_reg(MRF, base_mrf + mlen + i * reg_width,
 				  coordinate.type),
 			   coordinate);
-      if (i < 3 && c->key.gl_clamp_mask[i] & (1 << sampler))
+      if (i < 3 && c->key.tex.gl_clamp_mask[i] & (1 << sampler))
 	 inst->saturate = true;
       coordinate.reg_offset++;
    }
@@ -835,7 +859,7 @@ fs_visitor::emit_texture_gen5(ir_texture *ir, fs_reg dst, fs_reg coordinate,
    fs_inst *inst = NULL;
    switch (ir->op) {
    case ir_tex:
-      inst = emit(FS_OPCODE_TEX, dst);
+      inst = emit(SHADER_OPCODE_TEX, dst);
       break;
    case ir_txb:
       ir->lod_info.bias->accept(this);
@@ -852,7 +876,7 @@ fs_visitor::emit_texture_gen5(ir_texture *ir, fs_reg dst, fs_reg coordinate,
       emit(BRW_OPCODE_MOV, fs_reg(MRF, base_mrf + mlen), this->result);
       mlen += reg_width;
 
-      inst = emit(FS_OPCODE_TXL, dst);
+      inst = emit(SHADER_OPCODE_TXL, dst);
       break;
    case ir_txd: {
       ir->lod_info.grad.dPdx->accept(this);
@@ -882,14 +906,14 @@ fs_visitor::emit_texture_gen5(ir_texture *ir, fs_reg dst, fs_reg coordinate,
 	 mlen += reg_width;
       }
 
-      inst = emit(FS_OPCODE_TXD, dst);
+      inst = emit(SHADER_OPCODE_TXD, dst);
       break;
    }
    case ir_txs:
       ir->lod_info.lod->accept(this);
       emit(BRW_OPCODE_MOV, fs_reg(MRF, base_mrf + mlen, BRW_REGISTER_TYPE_UD), this->result);
       mlen += reg_width;
-      inst = emit(FS_OPCODE_TXS, dst);
+      inst = emit(SHADER_OPCODE_TXS, dst);
       break;
    case ir_txf:
       mlen = header_present + 4 * reg_width;
@@ -898,7 +922,7 @@ fs_visitor::emit_texture_gen5(ir_texture *ir, fs_reg dst, fs_reg coordinate,
       emit(BRW_OPCODE_MOV,
 	   fs_reg(MRF, base_mrf + mlen - reg_width, BRW_REGISTER_TYPE_UD),
 	   this->result);
-      inst = emit(FS_OPCODE_TXF, dst);
+      inst = emit(SHADER_OPCODE_TXF, dst);
       break;
    }
    inst->base_mrf = base_mrf;
@@ -966,7 +990,7 @@ fs_visitor::emit_texture_gen7(ir_texture *ir, fs_reg dst, fs_reg coordinate,
       for (int i = 0; i < ir->coordinate->type->vector_elements; i++) {
 	 fs_inst *inst = emit(BRW_OPCODE_MOV, fs_reg(MRF, base_mrf + mlen),
 			      coordinate);
-	 if (i < 3 && c->key.gl_clamp_mask[i] & (1 << sampler))
+	 if (i < 3 && c->key.tex.gl_clamp_mask[i] & (1 << sampler))
 	    inst->saturate = true;
 	 coordinate.reg_offset++;
 	 mlen += reg_width;
@@ -1011,7 +1035,7 @@ fs_visitor::emit_texture_gen7(ir_texture *ir, fs_reg dst, fs_reg coordinate,
       for (int i = 0; i < ir->coordinate->type->vector_elements; i++) {
 	 fs_inst *inst = emit(BRW_OPCODE_MOV, fs_reg(MRF, base_mrf + mlen),
 			      coordinate);
-	 if (i < 3 && c->key.gl_clamp_mask[i] & (1 << sampler))
+	 if (i < 3 && c->key.tex.gl_clamp_mask[i] & (1 << sampler))
 	    inst->saturate = true;
 	 coordinate.reg_offset++;
 	 mlen += reg_width;
@@ -1021,12 +1045,12 @@ fs_visitor::emit_texture_gen7(ir_texture *ir, fs_reg dst, fs_reg coordinate,
    /* Generate the SEND */
    fs_inst *inst = NULL;
    switch (ir->op) {
-   case ir_tex: inst = emit(FS_OPCODE_TEX, dst); break;
+   case ir_tex: inst = emit(SHADER_OPCODE_TEX, dst); break;
    case ir_txb: inst = emit(FS_OPCODE_TXB, dst); break;
-   case ir_txl: inst = emit(FS_OPCODE_TXL, dst); break;
-   case ir_txd: inst = emit(FS_OPCODE_TXD, dst); break;
-   case ir_txf: inst = emit(FS_OPCODE_TXF, dst); break;
-   case ir_txs: inst = emit(FS_OPCODE_TXS, dst); break;
+   case ir_txl: inst = emit(SHADER_OPCODE_TXL, dst); break;
+   case ir_txd: inst = emit(SHADER_OPCODE_TXD, dst); break;
+   case ir_txf: inst = emit(SHADER_OPCODE_TXF, dst); break;
+   case ir_txs: inst = emit(SHADER_OPCODE_TXS, dst); break;
    }
    inst->base_mrf = base_mrf;
    inst->mlen = mlen;
@@ -1052,11 +1076,11 @@ fs_visitor::visit(ir_texture *ir)
     */
    bool hw_compare_supported = ir->op != ir_txd;
    if (ir->shadow_comparitor && !hw_compare_supported) {
-      assert(c->key.compare_funcs[sampler] != GL_NONE);
+      assert(c->key.tex.compare_funcs[sampler] != GL_NONE);
       /* No need to even sample for GL_ALWAYS or GL_NEVER...bail early */
-      if (c->key.compare_funcs[sampler] == GL_ALWAYS)
+      if (c->key.tex.compare_funcs[sampler] == GL_ALWAYS)
 	 return swizzle_result(ir, fs_reg(1.0f), sampler);
-      else if (c->key.compare_funcs[sampler] == GL_NEVER)
+      else if (c->key.tex.compare_funcs[sampler] == GL_NEVER)
 	 return swizzle_result(ir, fs_reg(0.0f), sampler);
    }
 
@@ -1065,24 +1089,7 @@ fs_visitor::visit(ir_texture *ir)
    fs_reg coordinate = this->result;
 
    if (ir->offset != NULL) {
-      ir_constant *offset = ir->offset->as_constant();
-      assert(offset != NULL);
-
-      signed char offsets[3];
-      for (unsigned i = 0; i < ir->offset->type->vector_elements; i++)
-	 offsets[i] = (signed char) offset->value.i[i];
-
-      /* Combine all three offsets into a single unsigned dword:
-       *
-       *    bits 11:8 - U Offset (X component)
-       *    bits  7:4 - V Offset (Y component)
-       *    bits  3:0 - R Offset (Z component)
-       */
-      unsigned offset_bits = 0;
-      for (unsigned i = 0; i < ir->offset->type->vector_elements; i++) {
-	 const unsigned shift = 4 * (2 - i);
-	 offset_bits |= (offsets[i] << shift) & (0xF << shift);
-      }
+      uint32_t offset_bits = brw_texture_offset(ir->offset->as_constant());
 
       /* Explicitly set up the message header by copying g0 to msg reg m1. */
       emit(BRW_OPCODE_MOV, fs_reg(MRF, 1, BRW_REGISTER_TYPE_UD),
@@ -1182,7 +1189,7 @@ fs_visitor::visit(ir_texture *ir)
 	 /* FINISHME: This needs to be done pre-filtering. */
 
 	 uint32_t conditional = 0;
-	 switch (c->key.compare_funcs[sampler]) {
+	 switch (c->key.tex.compare_funcs[sampler]) {
 	 /* GL_ALWAYS and GL_NEVER were handled at the top of the function */
 	 case GL_LESS:     conditional = BRW_CONDITIONAL_L;   break;
 	 case GL_GREATER:  conditional = BRW_CONDITIONAL_G;   break;
@@ -1223,14 +1230,17 @@ fs_visitor::swizzle_result(ir_texture *ir, fs_reg orig_val, int sampler)
 {
    this->result = orig_val;
 
+   if (ir->op == ir_txs)
+      return;
+
    if (ir->type == glsl_type::float_type) {
       /* Ignore DEPTH_TEXTURE_MODE swizzling. */
       assert(ir->sampler->type->sampler_shadow);
-   } else if (c->key.tex_swizzles[sampler] != SWIZZLE_NOOP) {
+   } else if (c->key.tex.swizzles[sampler] != SWIZZLE_NOOP) {
       fs_reg swizzled_result = fs_reg(this, glsl_type::vec4_type);
 
       for (int i = 0; i < 4; i++) {
-	 int swiz = GET_SWZ(c->key.tex_swizzles[sampler], i);
+	 int swiz = GET_SWZ(c->key.tex.swizzles[sampler], i);
 	 fs_reg l = swizzled_result;
 	 l.reg_offset += i;
 
@@ -1240,7 +1250,7 @@ fs_visitor::swizzle_result(ir_texture *ir, fs_reg orig_val, int sampler)
 	    emit(BRW_OPCODE_MOV, l, fs_reg(1.0f));
 	 } else {
 	    fs_reg r = orig_val;
-	    r.reg_offset += GET_SWZ(c->key.tex_swizzles[sampler], i);
+	    r.reg_offset += GET_SWZ(c->key.tex.swizzles[sampler], i);
 	    emit(BRW_OPCODE_MOV, l, r);
 	 }
       }
@@ -1830,10 +1840,18 @@ fs_visitor::emit_interpolation_setup_gen6()
 }
 
 void
-fs_visitor::emit_color_write(int index, int first_color_mrf, fs_reg color)
+fs_visitor::emit_color_write(int target, int index, int first_color_mrf)
 {
    int reg_width = c->dispatch_width / 8;
    fs_inst *inst;
+   fs_reg color = outputs[target];
+   fs_reg mrf;
+
+   /* If there's no color data to be written, skip it. */
+   if (color.file == BAD_FILE)
+      return;
+
+   color.reg_offset += index;
 
    if (c->dispatch_width == 8 || intel->gen >= 6) {
       /* SIMD8 write looks like:
@@ -1853,7 +1871,7 @@ fs_visitor::emit_color_write(int index, int first_color_mrf, fs_reg color)
        * m + 7: a1
        */
       inst = emit(BRW_OPCODE_MOV,
-		  fs_reg(MRF, first_color_mrf + index * reg_width),
+		  fs_reg(MRF, first_color_mrf + index * reg_width, color.type),
 		  color);
       inst->saturate = c->key.clamp_fragment_color;
    } else {
@@ -1874,19 +1892,22 @@ fs_visitor::emit_color_write(int index, int first_color_mrf, fs_reg color)
 	  * destination + 4.
 	  */
 	 inst = emit(BRW_OPCODE_MOV,
-		     fs_reg(MRF, BRW_MRF_COMPR4 + first_color_mrf + index),
+		     fs_reg(MRF, BRW_MRF_COMPR4 + first_color_mrf + index,
+			    color.type),
 		     color);
 	 inst->saturate = c->key.clamp_fragment_color;
       } else {
 	 push_force_uncompressed();
-	 inst = emit(BRW_OPCODE_MOV, fs_reg(MRF, first_color_mrf + index),
+	 inst = emit(BRW_OPCODE_MOV, fs_reg(MRF, first_color_mrf + index,
+					    color.type),
 		     color);
 	 inst->saturate = c->key.clamp_fragment_color;
 	 pop_force_uncompressed();
 
 	 push_force_sechalf();
 	 color.sechalf = true;
-	 inst = emit(BRW_OPCODE_MOV, fs_reg(MRF, first_color_mrf + index + 4),
+	 inst = emit(BRW_OPCODE_MOV, fs_reg(MRF, first_color_mrf + index + 4,
+					    color.type),
 		     color);
 	 inst->saturate = c->key.clamp_fragment_color;
 	 pop_force_sechalf();
@@ -1956,27 +1977,12 @@ fs_visitor::emit_fb_writes()
       nr += reg_width;
    }
 
-   fs_reg color = reg_undef;
-   if (this->frag_color)
-      color = *(variable_storage(this->frag_color));
-   else if (this->frag_data) {
-      color = *(variable_storage(this->frag_data));
-      color.type = BRW_REGISTER_TYPE_F;
-   }
-
    for (int target = 0; target < c->key.nr_color_regions; target++) {
       this->current_annotation = ralloc_asprintf(this->mem_ctx,
 						 "FB write target %d",
 						 target);
-      if (this->frag_color || this->frag_data) {
-	 for (int i = 0; i < 4; i++) {
-	    emit_color_write(i, color_mrf, color);
-	    color.reg_offset++;
-	 }
-      }
-
-      if (this->frag_color)
-	 color.reg_offset -= 4;
+      for (int i = 0; i < 4; i++)
+	 emit_color_write(target, i, color_mrf);
 
       fs_inst *inst = emit(FS_OPCODE_FB_WRITE);
       inst->target = target;
@@ -1988,13 +1994,12 @@ fs_visitor::emit_fb_writes()
    }
 
    if (c->key.nr_color_regions == 0) {
-      if (c->key.alpha_test && (this->frag_color || this->frag_data)) {
+      if (c->key.alpha_test) {
 	 /* If the alpha test is enabled but there's no color buffer,
 	  * we still need to send alpha out the pipeline to our null
 	  * renderbuffer.
 	  */
-	 color.reg_offset += 3;
-	 emit_color_write(3, color_mrf, color);
+	 emit_color_write(0, 3, color_mrf);
       }
 
       fs_inst *inst = emit(FS_OPCODE_FB_WRITE);

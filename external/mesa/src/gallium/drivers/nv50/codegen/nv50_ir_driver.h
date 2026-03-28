@@ -42,6 +42,7 @@ struct nv50_ir_varying
    unsigned mask     : 4; /* vec4 mask */
    unsigned linear   : 1; /* linearly interpolated if true (and not flat) */
    unsigned flat     : 1;
+   unsigned sc       : 1; /* special colour interpolation mode (SHADE_MODEL) */
    unsigned centroid : 1;
    unsigned patch    : 1; /* patch constant value */
    unsigned regular  : 1; /* driver-specific meaning (e.g. input in sreg) */
@@ -71,7 +72,6 @@ struct nv50_ir_varying
 #define NV50_SEMANTIC_CLIPDISTANCE  (TGSI_SEMANTIC_COUNT + 0)
 #define NV50_SEMANTIC_TEXCOORD      (TGSI_SEMANTIC_COUNT + 1)
 #define NV50_SEMANTIC_POINTCOORD    (TGSI_SEMANTIC_COUNT + 2)
-#define NV50_SEMANTIC_VERTEXID      (TGSI_SEMANTIC_COUNT + 3)
 #define NV50_SEMANTIC_VIEWPORTINDEX (TGSI_SEMANTIC_COUNT + 4)
 #define NV50_SEMANTIC_LAYER         (TGSI_SEMANTIC_COUNT + 5)
 #define NV50_SEMANTIC_INVOCATIONID  (TGSI_SEMANTIC_COUNT + 6)
@@ -152,9 +152,11 @@ struct nv50_ir_prog_info
 
    struct {
       uint8_t clipDistance;      /* index of first clip distance output */
-      uint8_t clipDistanceCount;
+      uint8_t clipDistanceMask;  /* mask of clip distances defined */
       uint8_t cullDistanceMask;  /* clip distance mode (1 bit per output) */
+      int8_t genUserClip;        /* request user clip planes for ClipVertex */
       uint8_t pointSize;         /* output index for PointSize */
+      uint8_t vertexId;          /* system value index of VertexID */
       uint8_t edgeFlagIn;
       uint8_t edgeFlagOut;
       uint8_t fragDepth;         /* output index of FragDepth */

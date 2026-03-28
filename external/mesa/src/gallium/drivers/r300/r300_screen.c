@@ -89,22 +89,6 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         /* Supported features (boolean caps). */
         case PIPE_CAP_NPOT_TEXTURES:
         case PIPE_CAP_TWO_SIDED_STENCIL:
-        case PIPE_CAP_GLSL:
-            /* I'll be frank. This is a lie.
-             *
-             * We don't truly support GLSL on any of this driver's chipsets.
-             * To be fair, no chipset supports the full GLSL specification
-             * to the best of our knowledge, but some of the less esoteric
-             * features are still missing here.
-             *
-             * Rather than cripple ourselves intentionally, I'm going to set
-             * this flag, and as Gallium's interface continues to change, I
-             * hope that this single monolithic GLSL enable can slowly get
-             * split down into many different pieces and the state tracker
-             * will handle fallbacks transparently, like it should.
-             *
-             * ~ C.
-             */
         case PIPE_CAP_ANISOTROPIC_FILTER:
         case PIPE_CAP_POINT_SPRITE:
         case PIPE_CAP_OCCLUSION_QUERY:
@@ -116,6 +100,8 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
         case PIPE_CAP_CONDITIONAL_RENDER:
         case PIPE_CAP_TEXTURE_BARRIER:
+        case PIPE_CAP_TGSI_CAN_COMPACT_VARYINGS:
+        case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
             return 1;
 
         /* r300 cannot do swizzling of compressed textures. Supported otherwise. */
@@ -133,7 +119,7 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_DUAL_SOURCE_BLEND:
         case PIPE_CAP_INDEP_BLEND_ENABLE:
         case PIPE_CAP_INDEP_BLEND_FUNC:
-        case PIPE_CAP_DEPTH_CLAMP:
+        case PIPE_CAP_DEPTH_CLIP_DISABLE:
         case PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE:
         case PIPE_CAP_SHADER_STENCIL_EXPORT:
         case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
@@ -145,7 +131,10 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_SCALED_RESOLVE:
         case PIPE_CAP_MIN_TEXEL_OFFSET:
         case PIPE_CAP_MAX_TEXEL_OFFSET:
-        case PIPE_CAP_STREAM_OUTPUT:
+        case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
+        case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
+        case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
+        case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
             return 0;
 
         /* SWTCL-only features. */
@@ -164,12 +153,8 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         /* Render targets. */
         case PIPE_CAP_MAX_RENDER_TARGETS:
             return 4;
-
-        default:
-            debug_printf("r300: Warning: Unknown CAP %d in get_param.\n",
-                         param);
-            return 0;
     }
+    return 0;
 }
 
 static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, enum pipe_shader_cap param)
@@ -178,8 +163,7 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
    boolean is_r400 = r300screen->caps.is_r400;
    boolean is_r500 = r300screen->caps.is_r500;
 
-   switch (shader)
-    {
+   switch (shader) {
     case PIPE_SHADER_FRAGMENT:
         switch (param)
         {
@@ -208,10 +192,11 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
             return 1;
         case PIPE_SHADER_CAP_MAX_TEMPS:
             return is_r500 ? 128 : is_r400 ? 64 : 32;
-        case PIPE_SHADER_CAP_MAX_ADDRS:
-            return 0;
         case PIPE_SHADER_CAP_MAX_PREDS:
             return is_r500 ? 1 : 0;
+        case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
+           return r300screen->caps.num_tex_units;
+        case PIPE_SHADER_CAP_MAX_ADDRS:
         case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
@@ -219,15 +204,15 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
         case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
         case PIPE_SHADER_CAP_SUBROUTINES:
         case PIPE_SHADER_CAP_INTEGERS:
+        case PIPE_SHADER_CAP_OUTPUT_READ:
             return 0;
-        case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
-           return r300screen->caps.num_tex_units;
         }
         break;
     case PIPE_SHADER_VERTEX:
         switch (param)
         {
         case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
+        case PIPE_SHADER_CAP_SUBROUTINES:
             return 0;
         default:;
         }
@@ -241,9 +226,6 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
         case PIPE_SHADER_CAP_MAX_INSTRUCTIONS:
         case PIPE_SHADER_CAP_MAX_ALU_INSTRUCTIONS:
             return is_r500 ? 1024 : 256;
-        case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
-        case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
-            return 0;
         case PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH:
             return is_r500 ? 4 : 0; /* For loops; not sure about conditionals. */
         case PIPE_SHADER_CAP_MAX_INPUTS:
@@ -260,29 +242,33 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
             return is_r500 ? 4 : 0; /* XXX guessed. */
         case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
             return 1;
+        case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
+        case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
         case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
         case PIPE_SHADER_CAP_SUBROUTINES:
         case PIPE_SHADER_CAP_INTEGERS:
+        case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
+        case PIPE_SHADER_CAP_OUTPUT_READ:
             return 0;
-        default:;
         }
         break;
     }
     return 0;
 }
 
-static float r300_get_paramf(struct pipe_screen* pscreen, enum pipe_cap param)
+static float r300_get_paramf(struct pipe_screen* pscreen,
+                             enum pipe_capf param)
 {
     struct r300_screen* r300screen = r300_screen(pscreen);
 
     switch (param) {
-        case PIPE_CAP_MAX_LINE_WIDTH:
-        case PIPE_CAP_MAX_LINE_WIDTH_AA:
-        case PIPE_CAP_MAX_POINT_WIDTH:
-        case PIPE_CAP_MAX_POINT_WIDTH_AA:
+        case PIPE_CAPF_MAX_LINE_WIDTH:
+        case PIPE_CAPF_MAX_LINE_WIDTH_AA:
+        case PIPE_CAPF_MAX_POINT_WIDTH:
+        case PIPE_CAPF_MAX_POINT_WIDTH_AA:
             /* The maximum dimensions of the colorbuffer are our practical
              * rendering limits. 2048 pixels should be enough for anybody. */
             if (r300screen->caps.is_r500) {
@@ -292,14 +278,14 @@ static float r300_get_paramf(struct pipe_screen* pscreen, enum pipe_cap param)
             } else {
                 return 2560.0f;
             }
-        case PIPE_CAP_MAX_TEXTURE_ANISOTROPY:
+        case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
             return 16.0f;
-        case PIPE_CAP_MAX_TEXTURE_LOD_BIAS:
+        case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
             return 16.0f;
-        case PIPE_CAP_GUARD_BAND_LEFT:
-        case PIPE_CAP_GUARD_BAND_TOP:
-        case PIPE_CAP_GUARD_BAND_RIGHT:
-        case PIPE_CAP_GUARD_BAND_BOTTOM:
+        case PIPE_CAPF_GUARD_BAND_LEFT:
+        case PIPE_CAPF_GUARD_BAND_TOP:
+        case PIPE_CAPF_GUARD_BAND_RIGHT:
+        case PIPE_CAPF_GUARD_BAND_BOTTOM:
             /* XXX I don't know what these should be but the least we can do is
              * silence the potential error message */
             return 0.0f;
@@ -322,8 +308,6 @@ static int r300_get_video_param(struct pipe_screen *screen,
       case PIPE_VIDEO_CAP_MAX_WIDTH:
       case PIPE_VIDEO_CAP_MAX_HEIGHT:
          return vl_video_buffer_max_size(screen);
-      case PIPE_VIDEO_CAP_NUM_BUFFERS_DESIRED:
-         return vl_num_buffers_desired(screen, profile);
       default:
          return 0;
    }

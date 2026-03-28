@@ -63,9 +63,9 @@ fs_visitor::assign_regs_trivial()
       assign_reg(hw_reg_mapping, &inst->src[1], reg_width);
    }
 
-   if (this->grf_used >= BRW_MAX_GRF) {
+   if (this->grf_used >= max_grf) {
       fail("Ran out of regs on trivial allocator (%d/%d)\n",
-	   this->grf_used, BRW_MAX_GRF);
+	   this->grf_used, max_grf);
    }
 
 }
@@ -88,7 +88,7 @@ brw_alloc_reg_set_for_classes(struct brw_context *brw,
    ralloc_free(brw->wm.ra_reg_to_grf);
    brw->wm.ra_reg_to_grf = ralloc_array(brw, uint8_t, ra_reg_count);
    ralloc_free(brw->wm.regs);
-   brw->wm.regs = ra_alloc_reg_set(ra_reg_count);
+   brw->wm.regs = ra_alloc_reg_set(brw, ra_reg_count);
    ralloc_free(brw->wm.classes);
    brw->wm.classes = ralloc_array(brw, int, class_count + 1);
 
@@ -156,7 +156,7 @@ fs_visitor::assign_regs()
    int reg_width = c->dispatch_width / 8;
    int hw_reg_mapping[this->virtual_grf_next];
    int first_assigned_grf = ALIGN(this->first_non_payload_grf, reg_width);
-   int base_reg_count = (BRW_MAX_GRF - first_assigned_grf) / reg_width;
+   int base_reg_count = (max_grf - first_assigned_grf) / reg_width;
    int class_sizes[base_reg_count];
    int class_count = 0;
 
@@ -236,8 +236,6 @@ fs_visitor::assign_regs()
 
       if (reg == -1) {
 	 fail("no register to spill\n");
-      } else if (intel->gen >= 7) {
-	 fail("no spilling support on gen7 yet\n");
       } else if (c->dispatch_width == 16) {
 	 fail("no spilling support on 16-wide yet\n");
       } else {

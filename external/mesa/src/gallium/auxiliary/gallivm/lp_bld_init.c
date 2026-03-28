@@ -81,18 +81,6 @@ enum LLVM_CodeGenOpt_Level {
 };
 
 
-/**
- * LLVM 2.6 permits only one ExecutionEngine to be created.  This is it.
- */
-static LLVMExecutionEngineRef GlobalEngine = NULL;
-
-/**
- * Same gallivm state shared by all contexts.
- */
-static struct gallivm_state *GlobalGallivm = NULL;
-
-
-
 
 extern void
 lp_register_oprofile_jit_event_listener(LLVMExecutionEngineRef EE);
@@ -222,6 +210,8 @@ free_gallivm_state(struct gallivm_state *gallivm)
 static boolean
 init_gallivm_state(struct gallivm_state *gallivm)
 {
+   LLVMExecutionEngineRef GlobalEngine = NULL;
+
    assert(!gallivm->context);
    assert(!gallivm->module);
    assert(!gallivm->provider);
@@ -345,6 +335,7 @@ gallivm_remove_garbage_collector_callback(garbage_collect_callback_func func,
       if (cb->func == func && cb->cb_data == cb_data) {
          /* found, remove it */
          remove_from_list(cb);
+         FREE(cb);
          return;
       }
    }
@@ -422,6 +413,8 @@ lp_build_init(void)
 struct gallivm_state *
 gallivm_create(void)
 {
+   struct gallivm_state *GlobalGallivm = NULL;
+
    if (!GlobalGallivm) {
       GlobalGallivm = CALLOC_STRUCT(gallivm_state);
       if (GlobalGallivm) {

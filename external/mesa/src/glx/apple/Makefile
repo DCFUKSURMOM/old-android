@@ -35,11 +35,12 @@ SOURCES = \
 	apple_xgl_api_stereo.c \
 	apple_xgl_api_viewport.c \
 	appledri.c \
+	../create_context.c \
 	../clientattrib.c \
 	../compsize.c \
 	../glxconfig.c \
 	glx_empty.c \
-	glx_error.c \
+	../glx_error.c \
 	../glx_pbuffer.c \
 	../glx_query.c \
 	../glxcmds.c \

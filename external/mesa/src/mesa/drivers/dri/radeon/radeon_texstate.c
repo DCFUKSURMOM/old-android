@@ -680,16 +680,17 @@ void radeonSetTexBuffer2(__DRIcontext *pDRICtx, GLint target, GLint texture_form
 		break;
 	}
 
-	_mesa_init_teximage_fields(radeon->glCtx, target, texImage,
-				   rb->base.Width, rb->base.Height, 1, 0,
+	_mesa_init_teximage_fields(radeon->glCtx, texImage,
+				   rb->base.Base.Width, rb->base.Base.Height,
+				   1, 0,
 				   rb->cpp, texFormat);
 	rImage->base.RowStride = rb->pitch / rb->cpp;
 
 	t->pp_txpitch &= (1 << 13) -1;
 	pitch_val = rb->pitch;
 
-        t->pp_txsize = ((rb->base.Width - 1) << RADEON_TEX_USIZE_SHIFT)
-		| ((rb->base.Height - 1) << RADEON_TEX_VSIZE_SHIFT);
+        t->pp_txsize = ((rb->base.Base.Width - 1) << RADEON_TEX_USIZE_SHIFT)
+		| ((rb->base.Base.Height - 1) << RADEON_TEX_VSIZE_SHIFT);
 	if (target == GL_TEXTURE_RECTANGLE_NV) {
 		t->pp_txformat |= RADEON_TXFORMAT_NON_POWER2;
 		t->pp_txpitch = pitch_val;
@@ -982,11 +983,6 @@ static GLboolean setup_hardware_state(r100ContextPtr rmesa, radeonTexObj *t, int
 
    firstImage = t->base.Image[0][t->minLod];
 
-   if (firstImage->Border > 0) {
-      fprintf(stderr, "%s: border\n", __FUNCTION__);
-      return GL_FALSE;
-   }
-
    log2Width  = firstImage->WidthLog2;
    log2Height = firstImage->HeightLog2;
    texelBytes = _mesa_get_format_bytes(firstImage->TexFormat);
@@ -1103,6 +1099,7 @@ static GLboolean radeonUpdateTextureUnit( struct gl_context *ctx, int unit )
    r100ContextPtr rmesa = R100_CONTEXT(ctx);
 
    if (ctx->Texture.Unit[unit]._ReallyEnabled & TEXTURE_3D_BIT) {
+     disable_tex_obj_state(rmesa, unit);
      rmesa->state.texture.unit[unit].texobj = NULL;
      return GL_FALSE;
    }

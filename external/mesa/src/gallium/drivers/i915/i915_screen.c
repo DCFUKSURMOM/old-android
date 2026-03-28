@@ -114,7 +114,7 @@ i915_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_sha
          return draw_get_shader_param(shader, cap);
       }
    case PIPE_SHADER_FRAGMENT:
-      /* XXX: these are just shader model 2.0 values, fix this! */
+      /* XXX: some of these are just shader model 2.0 values, fix this! */
       switch(cap) {
       case PIPE_SHADER_CAP_MAX_INSTRUCTIONS:
          return I915_MAX_ALU_INSN + I915_MAX_TEX_INSN;
@@ -151,6 +151,8 @@ i915_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_sha
          return 0;
       case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
          return I915_TEX_UNITS;
+      case PIPE_SHADER_CAP_OUTPUT_READ:
+         return 0;
       default:
          debug_printf("%s: Unknown cap %u.\n", __FUNCTION__, cap);
          return 0;
@@ -183,7 +185,7 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
 
    /* Unsupported features (boolean caps). */
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-   case PIPE_CAP_DEPTH_CLAMP:
+   case PIPE_CAP_DEPTH_CLIP_DISABLE:
    case PIPE_CAP_INDEP_BLEND_ENABLE:
    case PIPE_CAP_INDEP_BLEND_FUNC:
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
@@ -193,14 +195,16 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_SM3:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
+   case PIPE_CAP_SCALED_RESOLVE:
    case PIPE_CAP_FRAGMENT_COLOR_CLAMP_CONTROL:
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_CONDITIONAL_RENDER:
    case PIPE_CAP_TEXTURE_BARRIER:
+   case PIPE_CAP_TGSI_CAN_COMPACT_VARYINGS:
+   case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
       return 0;
 
    /* Features we can lie about (boolean caps). */
-   case PIPE_CAP_GLSL:
    case PIPE_CAP_OCCLUSION_QUERY:
       return is->debug.lie ? 1 : 0;
 
@@ -220,6 +224,9 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
       return I915_MAX_TEXTURE_2D_LEVELS;
    case PIPE_CAP_MIN_TEXEL_OFFSET:
    case PIPE_CAP_MAX_TEXEL_OFFSET:
+   case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
+   case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
+   case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return 0;
 
    /* Render targets. */
@@ -241,23 +248,23 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
 }
 
 static float
-i915_get_paramf(struct pipe_screen *screen, enum pipe_cap cap)
+i915_get_paramf(struct pipe_screen *screen, enum pipe_capf cap)
 {
    switch(cap) {
-   case PIPE_CAP_MAX_LINE_WIDTH:
+   case PIPE_CAPF_MAX_LINE_WIDTH:
       /* fall-through */
-   case PIPE_CAP_MAX_LINE_WIDTH_AA:
+   case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 7.5;
 
-   case PIPE_CAP_MAX_POINT_WIDTH:
+   case PIPE_CAPF_MAX_POINT_WIDTH:
       /* fall-through */
-   case PIPE_CAP_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
       return 255.0;
 
-   case PIPE_CAP_MAX_TEXTURE_ANISOTROPY:
+   case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 4.0;
 
-   case PIPE_CAP_MAX_TEXTURE_LOD_BIAS:
+   case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
       return 16.0;
 
    default:
@@ -298,7 +305,9 @@ i915_is_format_supported(struct pipe_screen *screen,
    };
    static const enum pipe_format render_supported[] = {
       PIPE_FORMAT_B8G8R8A8_UNORM,
+      PIPE_FORMAT_B8G8R8X8_UNORM,
       PIPE_FORMAT_R8G8B8A8_UNORM,
+      PIPE_FORMAT_R8G8B8X8_UNORM,
       PIPE_FORMAT_B5G6R5_UNORM,
       PIPE_FORMAT_B10G10R10A2_UNORM,
       PIPE_FORMAT_L8_UNORM,

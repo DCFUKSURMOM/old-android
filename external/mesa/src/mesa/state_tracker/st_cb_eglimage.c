@@ -86,7 +86,6 @@ st_egl_image_target_renderbuffer_storage(struct gl_context *ctx,
       strb->Base.Width = ps->width;
       strb->Base.Height = ps->height;
       strb->Base.Format = st_pipe_format_to_mesa_format(ps->format);
-      strb->Base.DataType = st_format_datatype(ps->format);
       strb->Base._BaseFormat = st_pipe_format_to_base_format(ps->format);
       strb->Base.InternalFormat = strb->Base._BaseFormat;
 
@@ -125,7 +124,7 @@ st_bind_surface(struct gl_context *ctx, GLenum target,
 
    texFormat = st_pipe_format_to_mesa_format(ps->format);
 
-   _mesa_init_teximage_fields(ctx, target, texImage,
+   _mesa_init_teximage_fields(ctx, texImage,
                               ps->width, ps->height, 1, 0, internalFormat,
                               texFormat);
 

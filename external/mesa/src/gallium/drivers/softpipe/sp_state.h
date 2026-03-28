@@ -122,7 +122,7 @@ struct sp_velems_state {
 };
 
 struct sp_so_state {
-   struct pipe_stream_output_state base;
+   struct pipe_stream_output_info base;
 };
 
 
@@ -157,9 +157,6 @@ softpipe_update_derived(struct softpipe_context *softpipe, unsigned prim);
 void
 softpipe_draw_vbo(struct pipe_context *pipe,
                   const struct pipe_draw_info *info);
-
-void
-softpipe_draw_stream_output(struct pipe_context *pipe, unsigned mode);
 
 void
 softpipe_map_transfers(struct softpipe_context *sp);

@@ -110,8 +110,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_TWO_SIDED_STENCIL:
       return 1;
-   case PIPE_CAP_GLSL:
-      return 1;
    case PIPE_CAP_SM3:
       return 1;
    case PIPE_CAP_ANISOTROPIC_FILTER:
@@ -152,11 +150,12 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE:
       return 1;
-   case PIPE_CAP_DEPTH_CLAMP:
+   case PIPE_CAP_DEPTH_CLIP_DISABLE:
       return 0;
    case PIPE_CAP_TGSI_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
+   case PIPE_CAP_CONDITIONAL_RENDER:
       return 1;
    default:
       return 0;
@@ -169,7 +168,12 @@ llvmpipe_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe
    switch(shader)
    {
    case PIPE_SHADER_FRAGMENT:
-      return tgsi_exec_get_shader_param(param);
+      switch (param) {
+      case PIPE_SHADER_CAP_INTEGERS:
+         return 0;
+      default:
+         return tgsi_exec_get_shader_param(param);
+      }
    case PIPE_SHADER_VERTEX:
    case PIPE_SHADER_GEOMETRY:
       switch (param) {
@@ -182,6 +186,8 @@ llvmpipe_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe
             return PIPE_MAX_VERTEX_SAMPLERS;
          else
             return 0;
+      case PIPE_SHADER_CAP_INTEGERS:
+	  return 0;
       default:
          return draw_get_shader_param(shader, param);
       }
@@ -191,25 +197,25 @@ llvmpipe_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe
 }
 
 static float
-llvmpipe_get_paramf(struct pipe_screen *screen, enum pipe_cap param)
+llvmpipe_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 {
    switch (param) {
-   case PIPE_CAP_MAX_LINE_WIDTH:
+   case PIPE_CAPF_MAX_LINE_WIDTH:
       /* fall-through */
-   case PIPE_CAP_MAX_LINE_WIDTH_AA:
+   case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 255.0; /* arbitrary */
-   case PIPE_CAP_MAX_POINT_WIDTH:
+   case PIPE_CAPF_MAX_POINT_WIDTH:
       /* fall-through */
-   case PIPE_CAP_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
       return 255.0; /* arbitrary */
-   case PIPE_CAP_MAX_TEXTURE_ANISOTROPY:
+   case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0; /* not actually signficant at this time */
-   case PIPE_CAP_MAX_TEXTURE_LOD_BIAS:
+   case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
       return 16.0; /* arbitrary */
-   case PIPE_CAP_GUARD_BAND_LEFT:
-   case PIPE_CAP_GUARD_BAND_TOP:
-   case PIPE_CAP_GUARD_BAND_RIGHT:
-   case PIPE_CAP_GUARD_BAND_BOTTOM:
+   case PIPE_CAPF_GUARD_BAND_LEFT:
+   case PIPE_CAPF_GUARD_BAND_TOP:
+   case PIPE_CAPF_GUARD_BAND_RIGHT:
+   case PIPE_CAPF_GUARD_BAND_BOTTOM:
       return 0.0;
    default:
       assert(0);
@@ -248,6 +254,10 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
    if (sample_count > 1)
       return FALSE;
 
+   if (format_desc->format == PIPE_FORMAT_R11G11B10_FLOAT ||
+       format_desc->format == PIPE_FORMAT_R9G9B9E5_FLOAT) 
+     return TRUE;
+
    if (bind & PIPE_BIND_RENDER_TARGET) {
       if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS ||
           format_desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB)
@@ -280,11 +290,6 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
       return util_format_s3tc_enabled;
-   }
-
-   /* u_format doesn't support RGTC yet */
-   if (format_desc->layout == UTIL_FORMAT_LAYOUT_RGTC) {
-      return FALSE;
    }
 
    /*
@@ -399,14 +404,13 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
        return NULL;
 #endif
 
-   screen = CALLOC_STRUCT(llvmpipe_screen);
-
 #ifdef DEBUG
    LP_DEBUG = debug_get_flags_option("LP_DEBUG", lp_debug_flags, 0 );
 #endif
 
    LP_PERF = debug_get_flags_option("LP_PERF", lp_perf_flags, 0 );
 
+   screen = CALLOC_STRUCT(llvmpipe_screen);
    if (!screen)
       return NULL;
 

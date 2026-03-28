@@ -21,8 +21,23 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+# use c99 compiler by default
+ifeq ($(LOCAL_CC),)
+ifeq ($(LOCAL_IS_HOST_MODULE),true)
+LOCAL_CC := $(HOST_CC) -std=c99
+else
+LOCAL_CC := $(TARGET_CC) -std=c99
+endif
+endif
+
 LOCAL_C_INCLUDES += \
 	$(MESA_TOP)/include
+
+# define ANDROID_VERSION (e.g., 4.0.x => 0x0400)
+major := $(word 1, $(subst ., , $(PLATFORM_VERSION)))
+minor := $(word 2, $(subst ., , $(PLATFORM_VERSION)))
+LOCAL_CFLAGS += \
+	-DANDROID_VERSION=0x0$(major)0$(minor)
 
 LOCAL_CFLAGS += \
 	-DPTHREADS \

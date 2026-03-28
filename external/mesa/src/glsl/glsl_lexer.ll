@@ -148,7 +148,7 @@ HASH		^{SPC}#{SPC}
 
     /* Preprocessor tokens. */ 
 ^[ \t]*#[ \t]*$			;
-^[ \t]*#[ \t]*version		{ BEGIN PP; return VERSION; }
+^[ \t]*#[ \t]*version		{ BEGIN PP; return VERSION_TOK; }
 ^[ \t]*#[ \t]*extension		{ BEGIN PP; return EXTENSION; }
 {HASH}line{SPCP}{INT}{SPCP}{INT}{SPC}$ {
 				   /* Eat characters until the first digit is
@@ -310,6 +310,7 @@ void		return VOID_TOK;
 layout		{
 		  if ((yyextra->language_version >= 140)
 		      || yyextra->AMD_conservative_depth_enable
+		      || yyextra->ARB_conservative_depth_enable
 		      || yyextra->ARB_explicit_attrib_location_enable
 		      || yyextra->ARB_fragment_coord_conventions_enable) {
 		      return LAYOUT_TOK;

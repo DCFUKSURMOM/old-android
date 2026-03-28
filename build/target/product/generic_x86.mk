@@ -19,6 +19,8 @@
 
 $(call inherit-product, $(SRC_TARGET_DIR)/product/generic.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/core.mk)
+# Get the hardware acceleration libraries
+$(call inherit-product-if-exists,device/common/gpu/gpu_mesa.mk)
 
 # Overrides
 PRODUCT_BRAND := generic_x86

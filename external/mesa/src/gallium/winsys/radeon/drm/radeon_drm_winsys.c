@@ -80,8 +80,10 @@ static boolean radeon_set_fd_access(struct radeon_drm_cs *applier,
                                     pipe_mutex *mutex,
                                     unsigned request, boolean enable)
 {
-    struct drm_radeon_info info = {0};
+    struct drm_radeon_info info;
     unsigned value = enable ? 1 : 0;
+
+    memset(&info, 0, sizeof(info));
 
     pipe_mutex_lock(*mutex);
 
@@ -127,16 +129,20 @@ static boolean radeon_set_fd_access(struct radeon_drm_cs *applier,
 static boolean radeon_get_drm_value(int fd, unsigned request,
                                     const char *errname, uint32_t *out)
 {
-    struct drm_radeon_info info = {0};
+    struct drm_radeon_info info;
     int retval;
+
+    memset(&info, 0, sizeof(info));
 
     info.value = (unsigned long)out;
     info.request = request;
 
     retval = drmCommandWriteRead(fd, DRM_RADEON_INFO, &info, sizeof(info));
-    if (retval && errname) {
-        fprintf(stderr, "radeon: Failed to get %s, error number %d\n",
-                errname, retval);
+    if (retval) {
+        if (errname) {
+            fprintf(stderr, "radeon: Failed to get %s, error number %d\n",
+                    errname, retval);
+        }
         return FALSE;
     }
     return TRUE;
@@ -145,9 +151,11 @@ static boolean radeon_get_drm_value(int fd, unsigned request,
 /* Helper function to do the ioctls needed for setup and init. */
 static boolean do_winsys_init(struct radeon_drm_winsys *ws)
 {
-    struct drm_radeon_gem_info gem_info = {0};
+    struct drm_radeon_gem_info gem_info;
     int retval;
     drmVersionPtr version;
+
+    memset(&gem_info, 0, sizeof(gem_info));
 
     /* We do things in a specific order here.
      *
@@ -323,10 +331,10 @@ struct radeon_winsys *radeon_drm_winsys_create(int fd)
     /* Create managers. */
     ws->kman = radeon_bomgr_create(ws);
     if (!ws->kman)
-	goto fail;
+        goto fail;
     ws->cman = pb_cache_manager_create(ws->kman, 1000000);
     if (!ws->cman)
-	goto fail;
+        goto fail;
 
     /* Set functions. */
     ws->base.destroy = radeon_winsys_destroy;
@@ -343,9 +351,9 @@ struct radeon_winsys *radeon_drm_winsys_create(int fd)
 
 fail:
     if (ws->cman)
-	ws->cman->destroy(ws->cman);
+        ws->cman->destroy(ws->cman);
     if (ws->kman)
-	ws->kman->destroy(ws->kman);
+        ws->kman->destroy(ws->kman);
     FREE(ws);
     return NULL;
 }

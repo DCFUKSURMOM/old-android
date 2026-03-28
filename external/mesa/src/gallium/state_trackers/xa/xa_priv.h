@@ -38,6 +38,12 @@
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
 
+#if defined(__GNUC__) && __GNUC__ >= 4
+#define XA_EXPORT __attribute__ ((visibility("default")))
+#else
+#define XA_EXPORT
+#endif
+
 #define XA_VB_SIZE (100 * 4 * 3 * 4)
 #define XA_LAST_SURFACE_TYPE (xa_type_yuv_component + 1)
 #define XA_MAX_SAMPLERS 3
@@ -231,7 +237,10 @@ void renderer_bind_destination(struct xa_context *r,
 void renderer_init_state(struct xa_context *r);
 void renderer_copy_prepare(struct xa_context *r,
 			   struct pipe_surface *dst_surface,
-			   struct pipe_resource *src_texture);
+			   struct pipe_resource *src_texture,
+			   const enum xa_formats src_xa_format,
+			   const enum xa_formats dst_xa_format);
+
 void renderer_copy(struct xa_context *r, int dx,
 		   int dy,
 		   int sx,

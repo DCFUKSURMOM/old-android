@@ -215,7 +215,7 @@ struct glx_context_vtable {
    void (*destroy)(struct glx_context *ctx);
    int (*bind)(struct glx_context *context, struct glx_context *old,
 	       GLXDrawable draw, GLXDrawable read);
-   void (*unbind)(struct glx_context *context, struct glx_context *new);
+   void (*unbind)(struct glx_context *context, struct glx_context *new_ctx);
    void (*wait_gl)(struct glx_context *ctx);
    void (*wait_x)(struct glx_context *ctx);
    void (*use_x_font)(struct glx_context *ctx,
@@ -226,9 +226,6 @@ struct glx_context_vtable {
    void (*release_tex_image)(Display * dpy, GLXDrawable drawable, int buffer);
    void * (*get_proc_address)(const char *symbol);
 };
-
-extern void
-glx_send_destroy_context(Display *dpy, XID xid);
 
 /**
  * GLX state that needs to be kept on the client.  One of these records
@@ -471,6 +468,14 @@ struct glx_screen_vtable {
 					 struct glx_config *config,
 					 struct glx_context *shareList,
 					 int renderType);
+
+   struct glx_context *(*create_context_attribs)(struct glx_screen *psc,
+						 struct glx_config *config,
+						 struct glx_context *shareList,
+						 unsigned num_attrib,
+						 const uint32_t *attribs,
+						 unsigned *error);
+
 };
 
 struct glx_screen
@@ -729,6 +734,9 @@ extern void __glXFreeVertexArrayState(struct glx_context *);
 */
 extern void __glXClientInfo(Display * dpy, int opcode);
 
+_X_HIDDEN void
+__glX_send_client_info(struct glx_display *glx_dpy);
+
 /************************************************************************/
 
 /*
@@ -780,6 +788,8 @@ GarbageCollectDRIDrawables(struct glx_screen *psc);
 extern __GLXDRIdrawable *
 GetGLXDRIDrawable(Display *dpy, GLXDrawable drawable);
 #endif
+
+extern struct glx_screen *GetGLXScreenConfigs(Display * dpy, int scrn);
 
 #ifdef GLX_USE_APPLEGL
 extern struct glx_screen *

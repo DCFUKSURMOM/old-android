@@ -1,4 +1,4 @@
-# Copyright 2010, The Android-x86 Open Source Project
+# Copyright 2010-2012, The Android-x86 Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ LOCAL_SRC_FILES :=			\
 	intel/intel_bufmgr.c		\
 	intel/intel_bufmgr_fake.c	\
 	intel/intel_bufmgr_gem.c	\
+	intel/intel_decode.c		\
 	intel/mm.c
 
 LOCAL_C_INCLUDES +=			\

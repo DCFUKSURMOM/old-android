@@ -45,6 +45,7 @@
 #include "sp_fence.h"
 #include "sp_public.h"
 
+DEBUG_GET_ONCE_BOOL_OPTION(use_llvm, "SOFTPIPE_USE_LLVM", FALSE)
 
 static const char *
 softpipe_get_vendor(struct pipe_screen *screen)
@@ -69,8 +70,6 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_NPOT_TEXTURES:
       return 1;
    case PIPE_CAP_TWO_SIDED_STENCIL:
-      return 1;
-   case PIPE_CAP_GLSL:
       return 1;
    case PIPE_CAP_SM3:
       return 1;
@@ -107,8 +106,11 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
       return 1;
-   case PIPE_CAP_STREAM_OUTPUT:
-      return 1;
+   case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
+      return PIPE_MAX_SO_BUFFERS;
+   case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
+   case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
+      return 16*4;
    case PIPE_CAP_PRIMITIVE_RESTART:
       return 1;
    case PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE:
@@ -119,12 +121,14 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
       return 1;
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-      return 64; /* matches core Mesa defaults */
+      return 256; /* for GL3 */
    case PIPE_CAP_MIN_TEXEL_OFFSET:
       return -8;
    case PIPE_CAP_MAX_TEXEL_OFFSET:
       return 7;
    case PIPE_CAP_CONDITIONAL_RENDER:
+      return 1;
+   case PIPE_CAP_FRAGMENT_COLOR_CLAMP_CONTROL:
       return 1;
    default:
       return 0;
@@ -134,6 +138,9 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
 static int
 softpipe_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_shader_cap param)
 {
+#ifdef HAVE_LLVM
+   struct softpipe_screen *sp_screen = softpipe_screen(screen);
+#endif
    switch(shader)
    {
    case PIPE_SHADER_FRAGMENT:
@@ -143,11 +150,17 @@ softpipe_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe
       switch (param) {
       case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
 #ifdef HAVE_LLVM
-         /* Softpipe doesn't yet know how to tell draw/llvm about textures */
-         return 0;
-#else
-         return PIPE_MAX_VERTEX_SAMPLERS;
+         if (sp_screen->use_llvm)
+            /* Softpipe doesn't yet know how to tell draw/llvm about textures */
+            return 0;
 #endif
+         return PIPE_MAX_VERTEX_SAMPLERS;
+      case PIPE_SHADER_CAP_INTEGERS:
+#ifdef HAVE_LLVM /* gallivm doesn't support integers yet */
+         if (sp_screen->use_llvm)
+            return 0;
+#endif
+         /* fallthrough */
       default:
          return draw_get_shader_param(shader, param);
       }
@@ -157,20 +170,20 @@ softpipe_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe
 }
 
 static float
-softpipe_get_paramf(struct pipe_screen *screen, enum pipe_cap param)
+softpipe_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 {
    switch (param) {
-   case PIPE_CAP_MAX_LINE_WIDTH:
+   case PIPE_CAPF_MAX_LINE_WIDTH:
       /* fall-through */
-   case PIPE_CAP_MAX_LINE_WIDTH_AA:
+   case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 255.0; /* arbitrary */
-   case PIPE_CAP_MAX_POINT_WIDTH:
+   case PIPE_CAPF_MAX_POINT_WIDTH:
       /* fall-through */
-   case PIPE_CAP_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
       return 255.0; /* arbitrary */
-   case PIPE_CAP_MAX_TEXTURE_ANISOTROPY:
+   case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0;
-   case PIPE_CAP_MAX_TEXTURE_LOD_BIAS:
+   case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
       return 16.0; /* arbitrary */
    default:
       return 0;
@@ -190,8 +203,6 @@ softpipe_get_video_param(struct pipe_screen *screen,
    case PIPE_VIDEO_CAP_MAX_WIDTH:
    case PIPE_VIDEO_CAP_MAX_HEIGHT:
       return vl_video_buffer_max_size(screen);
-   case PIPE_VIDEO_CAP_NUM_BUFFERS_DESIRED:
-      return vl_num_buffers_desired(screen, profile);
    default:
       return 0;
    }
@@ -251,19 +262,6 @@ softpipe_is_format_supported( struct pipe_screen *screen,
 
    if (bind & PIPE_BIND_DEPTH_STENCIL) {
       if (format_desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS)
-         return FALSE;
-
-      /*
-       * TODO: Unfortunately we cannot render into anything more than 32 bits
-       * because we encode depth and stencil clear values into a 32bit word.
-       */
-      if (format_desc->block.bits > 32)
-         return FALSE;
-
-      /*
-       * TODO: eliminate this restriction
-       */
-      if (format == PIPE_FORMAT_Z32_FLOAT)
          return FALSE;
    }
 
@@ -339,6 +337,8 @@ softpipe_create_screen(struct sw_winsys *winsys)
    screen->base.is_video_format_supported = vl_video_buffer_is_format_supported;
    screen->base.context_create = softpipe_create_context;
    screen->base.flush_frontbuffer = softpipe_flush_frontbuffer;
+
+   screen->use_llvm = debug_get_option_use_llvm();
 
    util_format_s3tc_init();
 

@@ -196,9 +196,6 @@ svga_transfer_dma(struct svga_context *svga,
 }
 
 
-
-
-
 static boolean 
 svga_texture_get_handle(struct pipe_screen *screen,
                                struct pipe_resource *texture,
@@ -236,11 +233,6 @@ svga_texture_destroy(struct pipe_screen *screen,
 }
 
 
-
-
-
-
-
 /* XXX: Still implementing this as if it was a screen function, but
  * can now modify it to queue transfers on the context.
  */
@@ -259,7 +251,7 @@ svga_texture_get_transfer(struct pipe_context *pipe,
    unsigned nblocksy = util_format_get_nblocksy(texture->format, box->height);
 
    /* We can't map texture storage directly */
-   if (usage & PIPE_TRANSFER_MAP_DIRECTLY)
+   if (usage & (PIPE_TRANSFER_MAP_DIRECTLY | PIPE_TRANSFER_MAP_PERMANENTLY))
       return NULL;
 
    assert(box->depth == 1);
@@ -396,9 +388,6 @@ svga_texture_transfer_destroy(struct pipe_context *pipe,
 }
 
 
-
-
-
 struct u_resource_vtbl svga_texture_vtbl = 
 {
    svga_texture_get_handle,	      /* get_handle */
@@ -410,8 +399,6 @@ struct u_resource_vtbl svga_texture_vtbl =
    svga_texture_transfer_unmap,	      /* transfer_unmap */
    u_default_transfer_inline_write    /* transfer_inline_write */
 };
-
-
 
 
 struct pipe_resource *
@@ -467,16 +454,19 @@ svga_texture_create(struct pipe_screen *screen,
    }
 
    /* 
-    * XXX: Never pass the SVGA3D_SURFACE_HINT_RENDERTARGET hint. Mesa cannot
+    * Note: Previously we never passed the
+    * SVGA3D_SURFACE_HINT_RENDERTARGET hint. Mesa cannot
     * know beforehand whether a texture will be used as a rendertarget or not
     * and it always requests PIPE_BIND_RENDER_TARGET, therefore
     * passing the SVGA3D_SURFACE_HINT_RENDERTARGET here defeats its purpose.
+    *
+    * However, this was changed since other state trackers
+    * (XA for example) uses it accurately and certain device versions
+    * relies on it in certain situations to render correctly.
     */
-#if 0
    if((template->bind & PIPE_BIND_RENDER_TARGET) &&
       !util_format_is_s3tc(template->format))
       tex->key.flags |= SVGA3D_SURFACE_HINT_RENDERTARGET;
-#endif
    
    if(template->bind & PIPE_BIND_DEPTH_STENCIL)
       tex->key.flags |= SVGA3D_SURFACE_HINT_DEPTHSTENCIL;
@@ -502,8 +492,6 @@ error2:
 error1:
    return NULL;
 }
-
-
 
 
 struct pipe_resource *
@@ -568,4 +556,3 @@ svga_texture_from_handle(struct pipe_screen *screen,
 
    return &tex->b.b;
 }
-

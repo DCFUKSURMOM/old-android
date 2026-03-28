@@ -294,6 +294,8 @@ static uint32_t r600_translate_colorswap(enum pipe_format format)
 	case PIPE_FORMAT_L8_SRGB:
 	case PIPE_FORMAT_R8_UNORM:
 	case PIPE_FORMAT_R8_SNORM:
+	case PIPE_FORMAT_R8_UINT:
+	case PIPE_FORMAT_R8_SINT:
 		return V_028C70_SWAP_STD;
 
 	/* 16-bit buffers. */
@@ -368,6 +370,7 @@ static uint32_t r600_translate_colorswap(enum pipe_format format)
 		return V_028C70_SWAP_STD;
 
 	case PIPE_FORMAT_B10G10R10A2_UNORM:
+	case PIPE_FORMAT_B10G10R10A2_UINT:
 		return V_028C70_SWAP_ALT;
 
 	case PIPE_FORMAT_R11G11B10_FLOAT:
@@ -490,6 +493,7 @@ static uint32_t r600_translate_colorformat(enum pipe_format format)
 	case PIPE_FORMAT_R10G10B10A2_UNORM:
 	case PIPE_FORMAT_R10G10B10X2_SNORM:
 	case PIPE_FORMAT_B10G10R10A2_UNORM:
+	case PIPE_FORMAT_B10G10R10A2_UINT:
 	case PIPE_FORMAT_R10SG10SB10SA2U_NORM:
 		return V_028C70_COLOR_2_10_10_10;
 
@@ -503,6 +507,10 @@ static uint32_t r600_translate_colorformat(enum pipe_format format)
 
 	case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
 		return V_028C70_COLOR_X24_8_32_FLOAT;
+
+	case PIPE_FORMAT_R32_UINT:
+	case PIPE_FORMAT_R32_SINT:
+		return V_028C70_COLOR_32;
 
 	case PIPE_FORMAT_R32_FLOAT:
 	case PIPE_FORMAT_Z32_FLOAT:
@@ -898,6 +906,8 @@ static void *evergreen_create_rs_state(struct pipe_context *ctx,
 	rs->clamp_fragment_color = state->clamp_fragment_color;
 	rs->flatshade = state->flatshade;
 	rs->sprite_coord_enable = state->sprite_coord_enable;
+	rs->two_side = state->light_twoside;
+	rs->clip_plane_enable = state->clip_plane_enable;
 
 	clip_rule = state->scissor ? 0xAAAA : 0xFFFF;
 
@@ -925,8 +935,8 @@ static void *evergreen_create_rs_state(struct pipe_context *ctx,
 				state->fill_back != PIPE_POLYGON_MODE_FILL);
 	r600_pipe_state_add_reg(rstate, R_028814_PA_SU_SC_MODE_CNTL,
 		S_028814_PROVOKING_VTX_LAST(prov_vtx) |
-		S_028814_CULL_FRONT((state->cull_face & PIPE_FACE_FRONT) ? 1 : 0) |
-		S_028814_CULL_BACK((state->cull_face & PIPE_FACE_BACK) ? 1 : 0) |
+		S_028814_CULL_FRONT(state->rasterizer_discard || (state->cull_face & PIPE_FACE_FRONT) ? 1 : 0) |
+		S_028814_CULL_BACK(state->rasterizer_discard || (state->cull_face & PIPE_FACE_BACK) ? 1 : 0) |
 		S_028814_FACE(!state->front_ccw) |
 		S_028814_POLY_OFFSET_FRONT_ENABLE(state->offset_tri) |
 		S_028814_POLY_OFFSET_BACK_ENABLE(state->offset_tri) |
@@ -935,8 +945,8 @@ static void *evergreen_create_rs_state(struct pipe_context *ctx,
 		S_028814_POLYMODE_FRONT_PTYPE(r600_translate_fill(state->fill_front)) |
 		S_028814_POLYMODE_BACK_PTYPE(r600_translate_fill(state->fill_back)), 0xFFFFFFFF, NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_02881C_PA_CL_VS_OUT_CNTL,
-			S_02881C_USE_VTX_POINT_SIZE(state->point_size_per_vertex) |
-			S_02881C_VS_OUT_MISC_VEC_ENA(state->point_size_per_vertex), 0xFFFFFFFF, NULL, 0);
+			S_02881C_USE_VTX_POINT_SIZE(state->point_size_per_vertex),
+			S_02881C_USE_VTX_POINT_SIZE(1), NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_028820_PA_CL_NANINF_CNTL, 0x00000000, 0xFFFFFFFF, NULL, 0);
 	/* point size 12.4 fixed point */
 	tmp = (unsigned)(state->point_size * 8.0);
@@ -982,6 +992,11 @@ static void *evergreen_create_rs_state(struct pipe_context *ctx,
 	}
 	r600_pipe_state_add_reg(rstate, R_028B7C_PA_SU_POLY_OFFSET_CLAMP, fui(state->offset_clamp), 0xFFFFFFFF, NULL, 0);
 	r600_pipe_state_add_reg(rstate, R_02820C_PA_SC_CLIPRECT_RULE, clip_rule, 0xFFFFFFFF, NULL, 0);
+	r600_pipe_state_add_reg(rstate, R_028810_PA_CL_CLIP_CNTL,
+			S_028810_PS_UCP_MODE(3) | S_028810_ZCLIP_NEAR_DISABLE(!state->depth_clip) |
+			S_028810_ZCLIP_FAR_DISABLE(!state->depth_clip),
+			S_028810_PS_UCP_MODE(3) | S_028810_ZCLIP_NEAR_DISABLE(1) |
+			S_028810_ZCLIP_FAR_DISABLE(1), NULL, 0);
 	return rstate;
 }
 
@@ -1031,6 +1046,7 @@ static struct pipe_sampler_view *evergreen_create_sampler_view(struct pipe_conte
 							struct pipe_resource *texture,
 							const struct pipe_sampler_view *state)
 {
+	struct r600_pipe_context *rctx = (struct r600_pipe_context *)ctx;
 	struct r600_pipe_sampler_view *view = CALLOC_STRUCT(r600_pipe_sampler_view);
 	struct r600_pipe_resource_state *rstate;
 	struct r600_resource_texture *tmp = (struct r600_resource_texture*)texture;
@@ -1077,6 +1093,11 @@ static struct pipe_sampler_view *evergreen_create_sampler_view(struct pipe_conte
 		      util_format_get_blockwidth(state->format), 8);
 	array_mode = tmp->array_mode[0];
 	tile_type = tmp->tile_type;
+	/* 128 bit formats require tile type = 1 */
+	if (rctx->chip_class == CAYMAN) {
+		if (util_format_get_blocksize(state->format) >= 16)
+			tile_type = 1;
+	}
 
 	if (texture->target == PIPE_TEXTURE_1D_ARRAY) {
 	        height = 1;
@@ -1092,8 +1113,11 @@ static struct pipe_sampler_view *evergreen_create_sampler_view(struct pipe_conte
 
 	rstate->val[0] = (S_030000_DIM(r600_tex_dim(texture->target)) |
 			  S_030000_PITCH((pitch / 8) - 1) |
-			  S_030000_NON_DISP_TILING_ORDER(tile_type) |
 			  S_030000_TEX_WIDTH(texture->width0 - 1));
+	if (rctx->chip_class == CAYMAN)
+		rstate->val[0] |= CM_S_030000_NON_DISP_TILING_ORDER(tile_type);
+	else
+		rstate->val[0] |= S_030000_NON_DISP_TILING_ORDER(tile_type);
 	rstate->val[1] = (S_030004_TEX_HEIGHT(height - 1) |
 			  S_030004_TEX_DEPTH(depth - 1) |
 			  S_030004_ARRAY_MODE(array_mode));
@@ -1196,13 +1220,14 @@ static void evergreen_set_clip_state(struct pipe_context *ctx,
 {
 	struct r600_pipe_context *rctx = (struct r600_pipe_context *)ctx;
 	struct r600_pipe_state *rstate = CALLOC_STRUCT(r600_pipe_state);
+	struct pipe_resource *cbuf;
 
 	if (rstate == NULL)
 		return;
 
 	rctx->clip = *state;
 	rstate->id = R600_PIPE_STATE_CLIP;
-	for (int i = 0; i < state->nr; i++) {
+	for (int i = 0; i < 6; i++) {
 		r600_pipe_state_add_reg(rstate,
 					R_0285BC_PA_CL_UCP0_X + i * 16,
 					fui(state->ucp[i][0]), 0xFFFFFFFF, NULL, 0);
@@ -1216,14 +1241,17 @@ static void evergreen_set_clip_state(struct pipe_context *ctx,
 					R_0285C8_PA_CL_UCP0_W + i * 16,
 					fui(state->ucp[i][3]), 0xFFFFFFFF, NULL, 0);
 	}
-	r600_pipe_state_add_reg(rstate, R_028810_PA_CL_CLIP_CNTL,
-			S_028810_PS_UCP_MODE(3) | ((1 << state->nr) - 1) |
-			S_028810_ZCLIP_NEAR_DISABLE(state->depth_clamp) |
-			S_028810_ZCLIP_FAR_DISABLE(state->depth_clamp), 0xFFFFFFFF, NULL, 0);
 
 	free(rctx->states[R600_PIPE_STATE_CLIP]);
 	rctx->states[R600_PIPE_STATE_CLIP] = rstate;
 	r600_context_pipe_state_set(&rctx->ctx, rstate);
+
+	cbuf = pipe_user_buffer_create(ctx->screen,
+                                   state->ucp,
+                                   4*4*8, /* 8*4 floats */
+                                   PIPE_BIND_CONSTANT_BUFFER);
+	r600_set_constant_buffer(ctx, PIPE_SHADER_VERTEX, 1, cbuf);
+	pipe_resource_reference(&cbuf, NULL);
 }
 
 static void evergreen_set_polygon_stipple(struct pipe_context *ctx,
@@ -1357,7 +1385,7 @@ static void evergreen_cb(struct r600_pipe_context *rctx, struct r600_pipe_state 
 	}
 
 	/* XXX quite sure for dx10+ hw don't need any offset hacks */
-	offset = r600_texture_get_offset((struct r600_resource_texture *)state->cbufs[cb]->texture,
+	offset = r600_texture_get_offset(rtex,
 					 level, state->cbufs[cb]->u.tex.first_layer);
 	pitch = rtex->pitch_in_blocks[level] / 8 - 1;
 	slice = rtex->pitch_in_blocks[level] * surf->aligned_height / 64 - 1;
@@ -1438,6 +1466,11 @@ static void evergreen_cb(struct r600_pipe_context *rctx, struct r600_pipe_state 
 		tile_type = rtex->tile_type;
 	} else /* workaround for linear buffers */
 		tile_type = 1;
+	/* 128 bit formats require tile type = 1 */
+	if (rctx->chip_class == CAYMAN) {
+		if (util_format_get_blocksize(surf->base.format) >= 16)
+			tile_type = 1;
+	}
 
 	/* FIXME handle enabling of CB beyond BASE8 which has different offset */
 	r600_pipe_state_add_reg(rstate,
@@ -1686,6 +1719,9 @@ void evergreen_init_state_functions(struct r600_pipe_context *rctx)
 	rctx->context.sampler_view_destroy = r600_sampler_view_destroy;
 	rctx->context.redefine_user_buffer = u_default_redefine_user_buffer;
 	rctx->context.texture_barrier = evergreen_texture_barrier;
+	rctx->context.create_stream_output_target = r600_create_so_target;
+	rctx->context.stream_output_target_destroy = r600_so_target_destroy;
+	rctx->context.set_stream_output_targets = r600_set_so_targets;
 }
 
 static void cayman_init_config(struct r600_pipe_context *rctx)
@@ -2389,7 +2425,6 @@ void evergreen_pipe_shader_ps(struct pipe_context *ctx, struct r600_pipe_shader 
 	r600_pipe_state_add_reg(rstate,
 				R_02884C_SQ_PGM_EXPORTS_PS,
 				exports_ps, 0xFFFFFFFF, NULL, 0);
-	/* FIXME: Evergreen doesn't seem to support MULTIWRITE_ENABLE. */
 	/* only set some bits here, the other bits are set in the dsa state */
 	r600_pipe_state_add_reg(rstate,
 				R_02880C_DB_SHADER_CONTROL,
@@ -2456,6 +2491,16 @@ void evergreen_pipe_shader_vs(struct pipe_context *ctx, struct r600_pipe_shader 
 	r600_pipe_state_add_reg(rstate,
 				R_03A200_SQ_LOOP_CONST_0 + (32 * 4), 0x01000FFF,
 				0xFFFFFFFF, NULL, 0);
+
+	r600_pipe_state_add_reg(rstate,
+				R_02881C_PA_CL_VS_OUT_CNTL,
+				S_02881C_VS_OUT_CCDIST0_VEC_ENA((rshader->clip_dist_write & 0x0F) != 0) |
+				S_02881C_VS_OUT_CCDIST1_VEC_ENA((rshader->clip_dist_write & 0xF0) != 0) |
+				S_02881C_VS_OUT_MISC_VEC_ENA(rshader->vs_out_misc_write),
+				S_02881C_VS_OUT_CCDIST0_VEC_ENA(1) |
+				S_02881C_VS_OUT_CCDIST1_VEC_ENA(1) |
+				S_02881C_VS_OUT_MISC_VEC_ENA(1),
+				NULL, 0);
 }
 
 void evergreen_fetch_shader(struct pipe_context *ctx,

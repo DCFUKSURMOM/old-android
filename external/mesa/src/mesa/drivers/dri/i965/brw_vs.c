@@ -139,14 +139,17 @@ brw_compute_vue_map(struct brw_vue_map *vue_map,
     * assign them contiguously.  Don't reassign outputs that already have a
     * slot.
     *
-    * Also, don't assign a slot for VERT_RESULT_CLIP_VERTEX, since it is
-    * unsupported in pre-GEN6, and in GEN6+ the vertex shader converts it into
-    * clip distances.
+    * Also, prior to Gen6, don't assign a slot for VERT_RESULT_CLIP_VERTEX,
+    * since it is unsupported.  In Gen6 and above, VERT_RESULT_CLIP_VERTEX may
+    * be needed for transform feedback; since we don't want to have to
+    * recompute the VUE map (and everything that depends on it) when transform
+    * feedback is enabled or disabled, just go ahead and assign a slot for it.
     */
    for (int i = 0; i < VERT_RESULT_MAX; ++i) {
+      if (intel->gen < 6 && i == VERT_RESULT_CLIP_VERTEX)
+         continue;
       if ((outputs_written & BITFIELD64_BIT(i)) &&
-          vue_map->vert_result_to_slot[i] == -1 &&
-          i != VERT_RESULT_CLIP_VERTEX) {
+          vue_map->vert_result_to_slot[i] == -1) {
          assign_vue_slot(vue_map, i);
       }
    }
@@ -207,7 +210,7 @@ do_vs_prog(struct brw_context *brw,
 
    if (c.key.copy_edgeflag) {
       c.prog_data.outputs_written |= BITFIELD64_BIT(VERT_RESULT_EDGE);
-      c.prog_data.inputs_read |= 1<<VERT_ATTRIB_EDGEFLAG;
+      c.prog_data.inputs_read |= VERT_BIT_EDGEFLAG;
    }
 
    /* Put dummy slots into the VUE for the SF to put the replaced
@@ -228,7 +231,7 @@ do_vs_prog(struct brw_context *brw,
 
    /* Emit GEN4 code.
     */
-   if (brw->new_vs_backend && prog) {
+   if (prog) {
       if (!brw_vs_emit(prog, &c)) {
 	 ralloc_free(mem_ctx);
 	 return false;
@@ -279,8 +282,10 @@ static void brw_upload_vs_prog(struct brw_context *brw)
    struct intel_context *intel = &brw->intel;
    struct gl_context *ctx = &intel->ctx;
    struct brw_vs_prog_key key;
+   /* BRW_NEW_VERTEX_PROGRAM */
    struct brw_vertex_program *vp = 
       (struct brw_vertex_program *)brw->vertex_program;
+   struct gl_program *prog = (struct gl_program *) brw->vertex_program;
    int i;
 
    memset(&key, 0, sizeof(key));
@@ -316,9 +321,15 @@ static void brw_upload_vs_prog(struct brw_context *brw)
       }
    }
 
+   /* _NEW_TEXTURE */
+   for (i = 0; i < BRW_MAX_TEX_UNIT; i++) {
+      if (prog->TexturesUsed[i])
+	 brw_populate_sampler_prog_key_data(ctx, &key.tex, i);
+   }
+
    /* BRW_NEW_VERTICES */
    for (i = 0; i < VERT_ATTRIB_MAX; i++) {
-      if (vp->program.Base.InputsRead & (1 << i) &&
+      if (vp->program.Base.InputsRead & BITFIELD64_BIT(i) &&
 	  brw->vb.inputs[i].glarray->Type == GL_FIXED) {
 	 key.gl_fixed_input_size[i] = brw->vb.inputs[i].glarray->Size;
       }
@@ -341,6 +352,7 @@ static void brw_upload_vs_prog(struct brw_context *brw)
 const struct brw_tracked_state brw_vs_prog = {
    .dirty = {
       .mesa  = (_NEW_TRANSFORM | _NEW_POLYGON | _NEW_POINT | _NEW_LIGHT |
+		_NEW_TEXTURE |
 		_NEW_BUFFERS),
       .brw   = (BRW_NEW_VERTEX_PROGRAM |
 		BRW_NEW_VERTICES),

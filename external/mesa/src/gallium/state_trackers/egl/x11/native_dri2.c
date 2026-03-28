@@ -313,22 +313,35 @@ dri2_surface_flush_frontbuffer(struct native_surface *nsurf)
 }
 
 static boolean
-dri2_surface_swap_buffers(struct native_surface *nsurf)
+dri2_surface_swap_buffers(struct native_surface *nsurf, int num_rects,
+                          const int *rects)
 {
    struct dri2_surface *dri2surf = dri2_surface(nsurf);
    struct dri2_display *dri2dpy = dri2surf->dri2dpy;
 
    /* copy to front buffer */
-   if (dri2surf->have_back)
-      x11_drawable_copy_buffers(dri2dpy->xscr, dri2surf->drawable,
-            0, 0, dri2surf->width, dri2surf->height,
-            DRI2BufferBackLeft, DRI2BufferFrontLeft);
+   if (dri2surf->have_back) {
+      if (num_rects > 0)
+         x11_drawable_copy_buffers_region(dri2dpy->xscr, dri2surf->drawable,
+               num_rects, rects,
+               DRI2BufferBackLeft, DRI2BufferFrontLeft);
+      else
+         x11_drawable_copy_buffers(dri2dpy->xscr, dri2surf->drawable,
+               0, 0, dri2surf->width, dri2surf->height,
+               DRI2BufferBackLeft, DRI2BufferFrontLeft);
+   }
 
    /* and update fake front buffer */
-   if (dri2surf->have_fake)
-      x11_drawable_copy_buffers(dri2dpy->xscr, dri2surf->drawable,
-            0, 0, dri2surf->width, dri2surf->height,
-            DRI2BufferFrontLeft, DRI2BufferFakeFrontLeft);
+   if (dri2surf->have_fake) {
+      if (num_rects > 0)
+         x11_drawable_copy_buffers_region(dri2dpy->xscr, dri2surf->drawable,
+               num_rects, rects,
+               DRI2BufferFrontLeft, DRI2BufferFakeFrontLeft);
+      else
+         x11_drawable_copy_buffers(dri2dpy->xscr, dri2surf->drawable,
+               0, 0, dri2surf->width, dri2surf->height,
+               DRI2BufferFrontLeft, DRI2BufferFakeFrontLeft);
+   }
 
    /* force buffers to be updated in next validation call */
    if (!dri2_surface_receive_events(&dri2surf->base)) {
@@ -354,7 +367,7 @@ dri2_surface_present(struct native_surface *nsurf,
       ret = dri2_surface_flush_frontbuffer(nsurf);
       break;
    case NATIVE_ATTACHMENT_BACK_LEFT:
-      ret = dri2_surface_swap_buffers(nsurf);
+      ret = dri2_surface_swap_buffers(nsurf, ctrl->num_rects, ctrl->rects);
       break;
    default:
       ret = FALSE;
@@ -722,6 +735,9 @@ dri2_display_get_param(struct native_display *ndpy,
       /* DRI2CopyRegion is used */
       val = TRUE;
       break;
+   case NATIVE_PARAM_PRESENT_REGION:
+      val = TRUE;
+      break;
    case NATIVE_PARAM_MAX_SWAP_INTERVAL:
    default:
       val = 0;
@@ -820,6 +836,8 @@ dri2_display_hash_table_compare(void *key1, void *key2)
    return ((char *) key1 - (char *) key2);
 }
 
+#ifdef HAVE_WAYLAND_BACKEND
+
 static int
 dri2_display_authenticate(void *user_data, uint32_t magic)
 {
@@ -828,8 +846,6 @@ dri2_display_authenticate(void *user_data, uint32_t magic)
 
    return x11_screen_authenticate(dri2dpy->xscr, magic);
 }
-
-#ifdef HAVE_WAYLAND_BACKEND
 
 static struct wayland_drm_callbacks wl_drm_callbacks = {
    dri2_display_authenticate,

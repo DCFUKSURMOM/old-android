@@ -120,14 +120,10 @@ typedef void (*FetchTexelFunc)(const struct swrast_texture_image *texImage,
                                GLfloat *texelOut);
 
 
-typedef void (*StoreTexelFunc)(struct swrast_texture_image *texImage,
-                               GLint col, GLint row, GLint img,
-                               const void *texel);
-
 /**
  * Subclass of gl_texture_image.
  * We need extra fields/info to keep tracking of mapped texture buffers,
- * strides and Fetch/Store functions.
+ * strides and Fetch functions.
  */
 struct swrast_texture_image
 {
@@ -142,13 +138,12 @@ struct swrast_texture_image
    GLint RowStride;		/**< Padded width in units of texels */
    GLuint *ImageOffsets;        /**< if 3D texture: array [Depth] of offsets to
                                      each 2D slice in 'Data', in texels */
-   GLubyte *Data;		/**< Image data, accessed via FetchTexel() */
+   GLubyte *Map;		/**< Pointer to mapped image memory */
 
    /** Malloc'd texture memory */
    GLubyte *Buffer;
 
    FetchTexelFunc FetchTexel;
-   StoreTexelFunc Store;
 };
 
 
@@ -165,6 +160,34 @@ swrast_texture_image_const(const struct gl_texture_image *img)
 {
    return (const struct swrast_texture_image *) img;
 }
+
+
+/**
+ * Subclass of gl_renderbuffer with extra fields needed for software
+ * rendering.
+ */
+struct swrast_renderbuffer
+{
+   struct gl_renderbuffer Base;
+
+   GLubyte *Buffer;     /**< The malloc'd memory for buffer */
+
+   /** These fields are only valid while buffer is mapped for rendering */
+   GLubyte *Map;
+   GLint RowStride;    /**< in bytes */
+
+   /** For span rendering */
+   GLenum ColorType;
+};
+
+
+/** cast wrapper */
+static inline struct swrast_renderbuffer *
+swrast_renderbuffer(struct gl_renderbuffer *img)
+{
+   return (struct swrast_renderbuffer *) img;
+}
+
 
 
 /**
@@ -196,17 +219,12 @@ typedef struct
 
    /** List/array of the fragment attributes to interpolate */
    GLuint _ActiveAttribs[FRAG_ATTRIB_MAX];
-   /** Same info, but as a bitmask */
-   GLbitfield _ActiveAttribMask;
+   /** Same info, but as a bitmask of FRAG_BIT_x bits */
+   GLbitfield64 _ActiveAttribMask;
    /** Number of fragment attributes to interpolate */
    GLuint _NumActiveAttribs;
    /** Indicates how each attrib is to be interpolated (lines/tris) */
    GLenum _InterpMode[FRAG_ATTRIB_MAX]; /* GL_FLAT or GL_SMOOTH (for now) */
-
-   /* Accum buffer temporaries.
-    */
-   GLboolean _IntegerAccumMode;	/**< Storing unscaled integers? */
-   GLfloat _IntegerAccumScaler;	/**< Implicit scale factor */
 
    /* Working values:
     */
@@ -425,6 +443,27 @@ _swrast_unmap_renderbuffers(struct gl_context *ctx);
          const GLuint attr = swrast->_ActiveAttribs[a];
 
 #define ATTRIB_LOOP_END } }
+
+
+/**
+ * Return the address of a pixel value in a mapped renderbuffer.
+ */
+static inline GLubyte *
+_swrast_pixel_address(struct gl_renderbuffer *rb, GLint x, GLint y)
+{
+   struct swrast_renderbuffer *srb = swrast_renderbuffer(rb);
+   const GLint bpp = _mesa_get_format_bytes(rb->Format);
+   const GLint rowStride = srb->RowStride;
+   assert(x >= 0);
+   assert(y >= 0);
+   /* NOTE: using <= only because of s_tritemp.h which gets a pixel
+    * address but doesn't necessarily access it.
+    */
+   assert(x <= (GLint) rb->Width);
+   assert(y <= (GLint) rb->Height);
+   assert(srb->Map);
+   return (GLubyte *) srb->Map + y * rowStride + x * bpp;
+}
 
 
 

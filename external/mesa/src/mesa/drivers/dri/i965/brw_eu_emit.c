@@ -67,6 +67,9 @@ gen6_resolve_implied_move(struct brw_compile *p,
    if (intel->gen < 6)
       return;
 
+   if (src->file == BRW_MESSAGE_REGISTER_FILE)
+      return;
+
    if (src->file != BRW_ARCHITECTURE_REGISTER_FILE || src->nr != BRW_ARF_NULL) {
       brw_push_insn_state(p);
       brw_set_mask_control(p, BRW_MASK_DISABLE);
@@ -81,10 +84,18 @@ gen6_resolve_implied_move(struct brw_compile *p,
 static void
 gen7_convert_mrf_to_grf(struct brw_compile *p, struct brw_reg *reg)
 {
+   /* From the BSpec / ISA Reference / send - [DevIVB+]:
+    * "The send with EOT should use register space R112-R127 for <src>. This is
+    *  to enable loading of a new thread into the same slot while the message
+    *  with EOT for current thread is pending dispatch."
+    *
+    * Since we're pretending to have 16 MRFs anyway, we may as well use the
+    * registers required for messages with EOT.
+    */
    struct intel_context *intel = &p->brw->intel;
    if (intel->gen == 7 && reg->file == BRW_MESSAGE_REGISTER_FILE) {
       reg->file = BRW_GENERAL_REGISTER_FILE;
-      reg->nr += 111;
+      reg->nr += GEN7_MRF_HACK_START;
    }
 }
 
@@ -642,15 +653,17 @@ brw_set_dp_read_message(struct brw_compile *p,
    }
 }
 
-static void brw_set_sampler_message(struct brw_compile *p,
-                                    struct brw_instruction *insn,
-                                    GLuint binding_table_index,
-                                    GLuint sampler,
-                                    GLuint msg_type,
-                                    GLuint response_length,
-                                    GLuint msg_length,
-                                    GLuint header_present,
-                                    GLuint simd_mode)
+void
+brw_set_sampler_message(struct brw_compile *p,
+                        struct brw_instruction *insn,
+                        GLuint binding_table_index,
+                        GLuint sampler,
+                        GLuint msg_type,
+                        GLuint response_length,
+                        GLuint msg_length,
+                        GLuint header_present,
+                        GLuint simd_mode,
+                        GLuint return_format)
 {
    struct brw_context *brw = p->brw;
    struct intel_context *intel = &brw->intel;
@@ -676,7 +689,7 @@ static void brw_set_sampler_message(struct brw_compile *p,
       insn->bits3.sampler.binding_table_index = binding_table_index;
       insn->bits3.sampler.sampler = sampler;
       insn->bits3.sampler.msg_type = msg_type;
-      insn->bits3.sampler.return_format = BRW_SAMPLER_RETURN_FORMAT_FLOAT32;
+      insn->bits3.sampler.return_format = return_format;
    }
 }
 
@@ -687,7 +700,15 @@ brw_next_insn(struct brw_compile *p, GLuint opcode)
 {
    struct brw_instruction *insn;
 
-   assert(p->nr_insn + 1 < BRW_EU_MAX_INSN);
+   if (p->nr_insn + 1 > p->store_size) {
+      if (0)
+         printf("incresing the store size to %d\n", p->store_size << 1);
+      p->store_size <<= 1;
+      p->store = reralloc(p->mem_ctx, p->store,
+                          struct brw_instruction, p->store_size);
+      if (!p->store)
+         assert(!"realloc eu store memeory failed");
+   }
 
    insn = &p->store[p->nr_insn++];
    memcpy(insn, p->current, sizeof(*insn));
@@ -897,14 +918,43 @@ struct brw_instruction *brw_JMPI(struct brw_compile *p,
 static void
 push_if_stack(struct brw_compile *p, struct brw_instruction *inst)
 {
-   p->if_stack[p->if_stack_depth] = inst;
+   p->if_stack[p->if_stack_depth] = inst - p->store;
 
    p->if_stack_depth++;
    if (p->if_stack_array_size <= p->if_stack_depth) {
       p->if_stack_array_size *= 2;
-      p->if_stack = reralloc(p->mem_ctx, p->if_stack, struct brw_instruction *,
+      p->if_stack = reralloc(p->mem_ctx, p->if_stack, int,
 			     p->if_stack_array_size);
    }
+}
+
+static struct brw_instruction *
+pop_if_stack(struct brw_compile *p)
+{
+   p->if_stack_depth--;
+   return &p->store[p->if_stack[p->if_stack_depth]];
+}
+
+static void
+push_loop_stack(struct brw_compile *p, struct brw_instruction *inst)
+{
+   if (p->loop_stack_array_size < p->loop_stack_depth) {
+      p->loop_stack_array_size *= 2;
+      p->loop_stack = reralloc(p->mem_ctx, p->loop_stack, int,
+			       p->loop_stack_array_size);
+      p->if_depth_in_loop = reralloc(p->mem_ctx, p->if_depth_in_loop, int,
+				     p->loop_stack_array_size);
+   }
+
+   p->loop_stack[p->loop_stack_depth] = inst - p->store;
+   p->loop_stack_depth++;
+   p->if_depth_in_loop[p->loop_stack_depth] = 0;
+}
+
+static struct brw_instruction *
+get_inner_do_insn(struct brw_compile *p)
+{
+   return &p->store[p->loop_stack[p->loop_stack_depth - 1]];
 }
 
 /* EU takes the value from the flag register and pushes it onto some
@@ -937,11 +987,11 @@ brw_IF(struct brw_compile *p, GLuint execute_size)
    } else if (intel->gen == 6) {
       brw_set_dest(p, insn, brw_imm_w(0));
       insn->bits1.branch_gen6.jump_count = 0;
-      brw_set_src0(p, insn, retype(brw_null_reg(), BRW_REGISTER_TYPE_D));
-      brw_set_src1(p, insn, retype(brw_null_reg(), BRW_REGISTER_TYPE_D));
+      brw_set_src0(p, insn, vec1(retype(brw_null_reg(), BRW_REGISTER_TYPE_D)));
+      brw_set_src1(p, insn, vec1(retype(brw_null_reg(), BRW_REGISTER_TYPE_D)));
    } else {
-      brw_set_dest(p, insn, retype(brw_null_reg(), BRW_REGISTER_TYPE_D));
-      brw_set_src0(p, insn, retype(brw_null_reg(), BRW_REGISTER_TYPE_D));
+      brw_set_dest(p, insn, vec1(retype(brw_null_reg(), BRW_REGISTER_TYPE_D)));
+      brw_set_src0(p, insn, vec1(retype(brw_null_reg(), BRW_REGISTER_TYPE_D)));
       brw_set_src1(p, insn, brw_imm_ud(0));
       insn->bits3.break_cont.jip = 0;
       insn->bits3.break_cont.uip = 0;
@@ -957,6 +1007,7 @@ brw_IF(struct brw_compile *p, GLuint execute_size)
    p->current->header.predicate_control = BRW_PREDICATE_NONE;
 
    push_if_stack(p, insn);
+   p->if_depth_in_loop[p->loop_stack_depth]++;
    return insn;
 }
 
@@ -1043,7 +1094,21 @@ patch_IF_ELSE(struct brw_compile *p,
 {
    struct intel_context *intel = &p->brw->intel;
 
-   assert(!p->single_program_flow);
+   /* We shouldn't be patching IF and ELSE instructions in single program flow
+    * mode when gen < 6, because in single program flow mode on those
+    * platforms, we convert flow control instructions to conditional ADDs that
+    * operate on IP (see brw_ENDIF).
+    *
+    * However, on Gen6, writing to IP doesn't work in single program flow mode
+    * (see the SandyBridge PRM, Volume 4 part 2, p79: "When SPF is ON, IP may
+    * not be updated by non-flow control instructions.").  And on later
+    * platforms, there is no significant benefit to converting control flow
+    * instructions to conditional ADDs.  So we do patch IF and ELSE
+    * instructions in single program flow mode on those platforms.
+    */
+   if (intel->gen < 6)
+      assert(!p->single_program_flow);
+
    assert(if_inst != NULL && if_inst->header.opcode == BRW_OPCODE_IF);
    assert(endif_inst != NULL);
    assert(else_inst == NULL || else_inst->header.opcode == BRW_OPCODE_ELSE);
@@ -1145,25 +1210,49 @@ void
 brw_ENDIF(struct brw_compile *p)
 {
    struct intel_context *intel = &p->brw->intel;
-   struct brw_instruction *insn;
+   struct brw_instruction *insn = NULL;
    struct brw_instruction *else_inst = NULL;
    struct brw_instruction *if_inst = NULL;
+   struct brw_instruction *tmp;
+   bool emit_endif = true;
+
+   /* In single program flow mode, we can express IF and ELSE instructions
+    * equivalently as ADD instructions that operate on IP.  On platforms prior
+    * to Gen6, flow control instructions cause an implied thread switch, so
+    * this is a significant savings.
+    *
+    * However, on Gen6, writing to IP doesn't work in single program flow mode
+    * (see the SandyBridge PRM, Volume 4 part 2, p79: "When SPF is ON, IP may
+    * not be updated by non-flow control instructions.").  And on later
+    * platforms, there is no significant benefit to converting control flow
+    * instructions to conditional ADDs.  So we only do this trick on Gen4 and
+    * Gen5.
+    */
+   if (intel->gen < 6 && p->single_program_flow)
+      emit_endif = false;
+
+   /*
+    * A single next_insn() may change the base adress of instruction store
+    * memory(p->store), so call it first before referencing the instruction
+    * store pointer from an index
+    */
+   if (emit_endif)
+      insn = next_insn(p, BRW_OPCODE_ENDIF);
 
    /* Pop the IF and (optional) ELSE instructions from the stack */
-   p->if_stack_depth--;
-   if (p->if_stack[p->if_stack_depth]->header.opcode == BRW_OPCODE_ELSE) {
-      else_inst = p->if_stack[p->if_stack_depth];
-      p->if_stack_depth--;
+   p->if_depth_in_loop[p->loop_stack_depth]--;
+   tmp = pop_if_stack(p);
+   if (tmp->header.opcode == BRW_OPCODE_ELSE) {
+      else_inst = tmp;
+      tmp = pop_if_stack(p);
    }
-   if_inst = p->if_stack[p->if_stack_depth];
+   if_inst = tmp;
 
-   if (p->single_program_flow) {
+   if (!emit_endif) {
       /* ENDIF is useless; don't bother emitting it. */
       convert_IF_ELSE_to_ADD(p, if_inst, else_inst);
       return;
    }
-
-   insn = next_insn(p, BRW_OPCODE_ENDIF);
 
    if (intel->gen < 6) {
       brw_set_dest(p, insn, retype(brw_vec4_grf(0,0), BRW_REGISTER_TYPE_UD));
@@ -1196,7 +1285,7 @@ brw_ENDIF(struct brw_compile *p)
    patch_IF_ELSE(p, if_inst, else_inst, insn);
 }
 
-struct brw_instruction *brw_BREAK(struct brw_compile *p, int pop_count)
+struct brw_instruction *brw_BREAK(struct brw_compile *p)
 {
    struct intel_context *intel = &p->brw->intel;
    struct brw_instruction *insn;
@@ -1211,7 +1300,7 @@ struct brw_instruction *brw_BREAK(struct brw_compile *p, int pop_count)
       brw_set_src0(p, insn, brw_ip_reg());
       brw_set_src1(p, insn, brw_imm_d(0x0));
       insn->bits3.if_else.pad0 = 0;
-      insn->bits3.if_else.pop_count = pop_count;
+      insn->bits3.if_else.pop_count = p->if_depth_in_loop[p->loop_stack_depth];
    }
    insn->header.compression_control = BRW_COMPRESSION_NONE;
    insn->header.execution_size = BRW_EXECUTE_8;
@@ -1219,8 +1308,7 @@ struct brw_instruction *brw_BREAK(struct brw_compile *p, int pop_count)
    return insn;
 }
 
-struct brw_instruction *gen6_CONT(struct brw_compile *p,
-				  struct brw_instruction *do_insn)
+struct brw_instruction *gen6_CONT(struct brw_compile *p)
 {
    struct brw_instruction *insn;
 
@@ -1236,7 +1324,7 @@ struct brw_instruction *gen6_CONT(struct brw_compile *p,
    return insn;
 }
 
-struct brw_instruction *brw_CONT(struct brw_compile *p, int pop_count)
+struct brw_instruction *brw_CONT(struct brw_compile *p)
 {
    struct brw_instruction *insn;
    insn = next_insn(p, BRW_OPCODE_CONTINUE);
@@ -1247,7 +1335,7 @@ struct brw_instruction *brw_CONT(struct brw_compile *p, int pop_count)
    insn->header.execution_size = BRW_EXECUTE_8;
    /* insn->header.mask_control = BRW_MASK_DISABLE; */
    insn->bits3.if_else.pad0 = 0;
-   insn->bits3.if_else.pop_count = pop_count;
+   insn->bits3.if_else.pop_count = p->if_depth_in_loop[p->loop_stack_depth];
    return insn;
 }
 
@@ -1272,9 +1360,12 @@ struct brw_instruction *brw_DO(struct brw_compile *p, GLuint execute_size)
    struct intel_context *intel = &p->brw->intel;
 
    if (intel->gen >= 6 || p->single_program_flow) {
+      push_loop_stack(p, &p->store[p->nr_insn]);
       return &p->store[p->nr_insn];
    } else {
       struct brw_instruction *insn = next_insn(p, BRW_OPCODE_DO);
+
+      push_loop_stack(p, insn);
 
       /* Override the defaults for this instruction:
        */
@@ -1292,13 +1383,40 @@ struct brw_instruction *brw_DO(struct brw_compile *p, GLuint execute_size)
    }
 }
 
-
-
-struct brw_instruction *brw_WHILE(struct brw_compile *p, 
-                                  struct brw_instruction *do_insn)
+/**
+ * For pre-gen6, we patch BREAK/CONT instructions to point at the WHILE
+ * instruction here.
+ *
+ * For gen6+, see brw_set_uip_jip(), which doesn't care so much about the loop
+ * nesting, since it can always just point to the end of the block/current loop.
+ */
+static void
+brw_patch_break_cont(struct brw_compile *p, struct brw_instruction *while_inst)
 {
    struct intel_context *intel = &p->brw->intel;
-   struct brw_instruction *insn;
+   struct brw_instruction *do_inst = get_inner_do_insn(p);
+   struct brw_instruction *inst;
+   int br = (intel->gen == 5) ? 2 : 1;
+
+   for (inst = while_inst - 1; inst != do_inst; inst--) {
+      /* If the jump count is != 0, that means that this instruction has already
+       * been patched because it's part of a loop inside of the one we're
+       * patching.
+       */
+      if (inst->header.opcode == BRW_OPCODE_BREAK &&
+	  inst->bits3.if_else.jump_count == 0) {
+	 inst->bits3.if_else.jump_count = br * ((while_inst - inst) + 1);
+      } else if (inst->header.opcode == BRW_OPCODE_CONTINUE &&
+		 inst->bits3.if_else.jump_count == 0) {
+	 inst->bits3.if_else.jump_count = br * (while_inst - inst);
+      }
+   }
+}
+
+struct brw_instruction *brw_WHILE(struct brw_compile *p)
+{
+   struct intel_context *intel = &p->brw->intel;
+   struct brw_instruction *insn, *do_insn;
    GLuint br = 1;
 
    if (intel->gen >= 5)
@@ -1306,6 +1424,7 @@ struct brw_instruction *brw_WHILE(struct brw_compile *p,
 
    if (intel->gen >= 7) {
       insn = next_insn(p, BRW_OPCODE_WHILE);
+      do_insn = get_inner_do_insn(p);
 
       brw_set_dest(p, insn, retype(brw_null_reg(), BRW_REGISTER_TYPE_D));
       brw_set_src0(p, insn, retype(brw_null_reg(), BRW_REGISTER_TYPE_D));
@@ -1315,6 +1434,7 @@ struct brw_instruction *brw_WHILE(struct brw_compile *p,
       insn->header.execution_size = BRW_EXECUTE_8;
    } else if (intel->gen == 6) {
       insn = next_insn(p, BRW_OPCODE_WHILE);
+      do_insn = get_inner_do_insn(p);
 
       brw_set_dest(p, insn, brw_imm_w(0));
       insn->bits1.branch_gen6.jump_count = br * (do_insn - insn);
@@ -1325,6 +1445,7 @@ struct brw_instruction *brw_WHILE(struct brw_compile *p,
    } else {
       if (p->single_program_flow) {
 	 insn = next_insn(p, BRW_OPCODE_ADD);
+         do_insn = get_inner_do_insn(p);
 
 	 brw_set_dest(p, insn, brw_ip_reg());
 	 brw_set_src0(p, insn, brw_ip_reg());
@@ -1332,6 +1453,7 @@ struct brw_instruction *brw_WHILE(struct brw_compile *p,
 	 insn->header.execution_size = BRW_EXECUTE_1;
       } else {
 	 insn = next_insn(p, BRW_OPCODE_WHILE);
+         do_insn = get_inner_do_insn(p);
 
 	 assert(do_insn->header.opcode == BRW_OPCODE_DO);
 
@@ -1343,10 +1465,14 @@ struct brw_instruction *brw_WHILE(struct brw_compile *p,
 	 insn->bits3.if_else.jump_count = br * (do_insn - insn + 1);
 	 insn->bits3.if_else.pop_count = 0;
 	 insn->bits3.if_else.pad0 = 0;
+
+	 brw_patch_break_cont(p, insn);
       }
    }
    insn->header.compression_control = BRW_COMPRESSION_NONE;
    p->current->header.predicate_control = BRW_PREDICATE_NONE;
+
+   p->loop_stack_depth--;
 
    return insn;
 }
@@ -1354,11 +1480,10 @@ struct brw_instruction *brw_WHILE(struct brw_compile *p,
 
 /* FORWARD JUMPS:
  */
-void brw_land_fwd_jump(struct brw_compile *p, 
-		       struct brw_instruction *jmp_insn)
+void brw_land_fwd_jump(struct brw_compile *p, int jmp_insn_idx)
 {
    struct intel_context *intel = &p->brw->intel;
-   struct brw_instruction *landing = &p->store[p->nr_insn];
+   struct brw_instruction *jmp_insn = &p->store[jmp_insn_idx];
    GLuint jmpi = 1;
 
    if (intel->gen >= 5)
@@ -1367,7 +1492,7 @@ void brw_land_fwd_jump(struct brw_compile *p,
    assert(jmp_insn->header.opcode == BRW_OPCODE_JMPI);
    assert(jmp_insn->bits1.da1.src1_reg_file == BRW_IMMEDIATE_VALUE);
 
-   jmp_insn->bits3.ud = jmpi * ((landing - jmp_insn) - 1);
+   jmp_insn->bits3.ud = jmpi * (p->nr_insn - jmp_insn_idx - 1);
 }
 
 
@@ -1443,11 +1568,14 @@ void brw_math( struct brw_compile *p,
       assert(src.file == BRW_GENERAL_REGISTER_FILE);
 
       assert(dest.hstride == BRW_HORIZONTAL_STRIDE_1);
-      assert(src.hstride == BRW_HORIZONTAL_STRIDE_1);
+      if (intel->gen == 6)
+	 assert(src.hstride == BRW_HORIZONTAL_STRIDE_1);
 
-      /* Source modifiers are ignored for extended math instructions. */
-      assert(!src.negate);
-      assert(!src.abs);
+      /* Source modifiers are ignored for extended math instructions on Gen6. */
+      if (intel->gen == 6) {
+	 assert(!src.negate);
+	 assert(!src.abs);
+      }
 
       if (function == BRW_MATH_FUNCTION_INT_DIV_QUOTIENT ||
 	  function == BRW_MATH_FUNCTION_INT_DIV_REMAINDER ||
@@ -1507,8 +1635,10 @@ void brw_math2(struct brw_compile *p,
    assert(src1.file == BRW_GENERAL_REGISTER_FILE);
 
    assert(dest.hstride == BRW_HORIZONTAL_STRIDE_1);
-   assert(src0.hstride == BRW_HORIZONTAL_STRIDE_1);
-   assert(src1.hstride == BRW_HORIZONTAL_STRIDE_1);
+   if (intel->gen == 6) {
+      assert(src0.hstride == BRW_HORIZONTAL_STRIDE_1);
+      assert(src1.hstride == BRW_HORIZONTAL_STRIDE_1);
+   }
 
    if (function == BRW_MATH_FUNCTION_INT_DIV_QUOTIENT ||
        function == BRW_MATH_FUNCTION_INT_DIV_REMAINDER ||
@@ -1520,11 +1650,13 @@ void brw_math2(struct brw_compile *p,
       assert(src1.type == BRW_REGISTER_TYPE_F);
    }
 
-   /* Source modifiers are ignored for extended math instructions. */
-   assert(!src0.negate);
-   assert(!src0.abs);
-   assert(!src1.negate);
-   assert(!src1.abs);
+   /* Source modifiers are ignored for extended math instructions on Gen6. */
+   if (intel->gen == 6) {
+      assert(!src0.negate);
+      assert(!src0.abs);
+      assert(!src1.negate);
+      assert(!src1.abs);
+   }
 
    /* Math is the same ISA format as other opcodes, except that CondModifier
     * becomes FC[3:0] and ThreadCtrl becomes FC[5:4].
@@ -2056,7 +2188,7 @@ void brw_fb_WRITE(struct brw_compile *p,
 			    msg_type,
 			    msg_length,
 			    header_present,
-			    1, /* last render target write */
+			    eot, /* last render target write */
 			    response_length,
 			    eot,
 			    0 /* send_commit_msg */);
@@ -2079,7 +2211,8 @@ void brw_SAMPLE(struct brw_compile *p,
 		GLuint response_length,
 		GLuint msg_length,
 		GLuint header_present,
-		GLuint simd_mode)
+		GLuint simd_mode,
+		GLuint return_format)
 {
    struct intel_context *intel = &p->brw->intel;
    bool need_stall = 0;
@@ -2173,7 +2306,8 @@ void brw_SAMPLE(struct brw_compile *p,
 			      response_length, 
 			      msg_length,
 			      header_present,
-			      simd_mode);
+			      simd_mode,
+			      return_format);
    }
 
    if (need_stall) {
@@ -2350,4 +2484,43 @@ void brw_ff_sync(struct brw_compile *p,
 			   allocate,
 			   response_length,
 			   eot);
+}
+
+/**
+ * Emit the SEND instruction necessary to generate stream output data on Gen6
+ * (for transform feedback).
+ *
+ * If send_commit_msg is true, this is the last piece of stream output data
+ * from this thread, so send the data as a committed write.  According to the
+ * Sandy Bridge PRM (volume 2 part 1, section 4.5.1):
+ *
+ *   "Prior to End of Thread with a URB_WRITE, the kernel must ensure all
+ *   writes are complete by sending the final write as a committed write."
+ */
+void
+brw_svb_write(struct brw_compile *p,
+              struct brw_reg dest,
+              GLuint msg_reg_nr,
+              struct brw_reg src0,
+              GLuint binding_table_index,
+              bool   send_commit_msg)
+{
+   struct brw_instruction *insn;
+
+   gen6_resolve_implied_move(p, &src0, msg_reg_nr);
+
+   insn = next_insn(p, BRW_OPCODE_SEND);
+   brw_set_dest(p, insn, dest);
+   brw_set_src0(p, insn, src0);
+   brw_set_src1(p, insn, brw_imm_d(0));
+   brw_set_dp_write_message(p, insn,
+                            binding_table_index,
+                            0, /* msg_control: ignored */
+                            GEN6_DATAPORT_WRITE_MESSAGE_STREAMED_VB_WRITE,
+                            1, /* msg_length */
+                            true, /* header_present */
+                            0, /* last_render_target: ignored */
+                            send_commit_msg, /* response_length */
+                            0, /* end_of_thread */
+                            send_commit_msg); /* send_commit_msg */
 }

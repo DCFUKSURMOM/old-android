@@ -53,6 +53,7 @@
 #include "intel_fbo.h"
 #include "intel_bufmgr.h"
 #include "intel_screen.h"
+#include "intel_mipmap_tree.h"
 
 #include "utils.h"
 #include "../glsl/ralloc.h"
@@ -224,7 +225,7 @@ intel_flush_front(struct gl_context *ctx)
 static unsigned
 intel_bits_per_pixel(const struct intel_renderbuffer *rb)
 {
-   return _mesa_get_format_bytes(rb->Base.Format) * 8;
+   return _mesa_get_format_bytes(intel_rb_format(rb)) * 8;
 }
 
 static void
@@ -507,14 +508,14 @@ intel_flush_rendering_to_batch(struct gl_context *ctx)
 }
 
 void
-intel_flush(struct gl_context *ctx)
+_intel_flush(struct gl_context *ctx, const char *file, int line)
 {
    struct intel_context *intel = intel_context(ctx);
 
    intel_flush_rendering_to_batch(ctx);
 
    if (intel->batch.used)
-      intel_batchbuffer_flush(intel);
+      _intel_batchbuffer_flush(intel, file, line);
 }
 
 static void
@@ -627,102 +628,11 @@ intelInitContext(struct intel_context *intel,
    intel->has_separate_stencil = intel->intelScreen->hw_has_separate_stencil;
    intel->must_use_separate_stencil = intel->intelScreen->hw_must_use_separate_stencil;
    intel->has_hiz = intel->intelScreen->hw_has_hiz;
+   intel->has_llc = intel->intelScreen->hw_has_llc;
+   intel->has_swizzling = intel->intelScreen->hw_has_swizzling;
 
-   memset(&ctx->TextureFormatSupported, 0,
-	  sizeof(ctx->TextureFormatSupported));
-   ctx->TextureFormatSupported[MESA_FORMAT_ARGB8888] = true;
-   if (devID != PCI_CHIP_I830_M && devID != PCI_CHIP_845_G)
-      ctx->TextureFormatSupported[MESA_FORMAT_XRGB8888] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_ARGB4444] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_ARGB1555] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RGB565] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_L8] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_A8] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_I8] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_AL88] = true;
-   if (intel->gen >= 4)
-      ctx->TextureFormatSupported[MESA_FORMAT_AL1616] = true;
-
-   /* Depth and stencil */
-   ctx->TextureFormatSupported[MESA_FORMAT_S8_Z24] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_X8_Z24] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_S8] = intel->has_separate_stencil;
-
-   /*
-    * This was disabled in initial FBO enabling to avoid combinations
-    * of depth+stencil that wouldn't work together.  We since decided
-    * that it was OK, since it's up to the app to come up with the
-    * combo that actually works, so this can probably be re-enabled.
-    */
-   /*
-   ctx->TextureFormatSupported[MESA_FORMAT_Z16] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_Z24] = true;
-   */
-
-   /* ctx->Extensions.MESA_ycbcr_texture */
-   ctx->TextureFormatSupported[MESA_FORMAT_YCBCR] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_YCBCR_REV] = true;
-
-   /* GL_3DFX_texture_compression_FXT1 */
-   ctx->TextureFormatSupported[MESA_FORMAT_RGB_FXT1] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RGBA_FXT1] = true;
-
-   /* GL_EXT_texture_compression_s3tc */
-   ctx->TextureFormatSupported[MESA_FORMAT_RGB_DXT1] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RGBA_DXT1] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RGBA_DXT3] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RGBA_DXT5] = true;
-
-#ifndef I915
-   /* GL_ARB_texture_compression_rgtc */
-   ctx->TextureFormatSupported[MESA_FORMAT_RED_RGTC1] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SIGNED_RED_RGTC1] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RG_RGTC2] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SIGNED_RG_RGTC2] = true;
-
-   /* GL_ARB_texture_rg */
-   ctx->TextureFormatSupported[MESA_FORMAT_R8] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_R16] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RG88] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RG1616] = true;
-
-   /* GL_MESA_texture_signed_rgba / GL_EXT_texture_snorm */
-   ctx->TextureFormatSupported[MESA_FORMAT_DUDV8] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SIGNED_RGBA8888_REV] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SIGNED_R8] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SIGNED_RG88_REV] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SIGNED_R16] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SIGNED_GR1616] = true;
-
-   /* GL_EXT_texture_sRGB */
-   ctx->TextureFormatSupported[MESA_FORMAT_SARGB8] = true;
-   if (intel->gen >= 5 || intel->is_g4x)
-      ctx->TextureFormatSupported[MESA_FORMAT_SRGB_DXT1] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SRGBA_DXT1] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SRGBA_DXT3] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_SRGBA_DXT5] = true;
-   if (intel->gen >= 5 || intel->is_g4x) {
-      ctx->TextureFormatSupported[MESA_FORMAT_SL8] = true;
-      ctx->TextureFormatSupported[MESA_FORMAT_SLA8] = true;
-   }
-
-#ifdef TEXTURE_FLOAT_ENABLED
-   ctx->TextureFormatSupported[MESA_FORMAT_RGBA_FLOAT32] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_RG_FLOAT32] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_R_FLOAT32] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_INTENSITY_FLOAT32] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_LUMINANCE_FLOAT32] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_ALPHA_FLOAT32] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_LUMINANCE_ALPHA_FLOAT32] = true;
-
-   /* GL_EXT_texture_shared_exponent */
-   ctx->TextureFormatSupported[MESA_FORMAT_RGB9_E5_FLOAT] = true;
-
-   /* GL_EXT_packed_float */
-   ctx->TextureFormatSupported[MESA_FORMAT_R11_G11_B10_FLOAT] = true;
-#endif
-
-#endif /* !I915 */
+   memset(&ctx->TextureFormatSupported,
+	  0, sizeof(ctx->TextureFormatSupported));
 
    driParseConfigFiles(&intel->optionCache, &intelScreen->optionCache,
                        sPriv->myNum, (intel->gen >= 4) ? "i965" : "i915");
@@ -1119,7 +1029,9 @@ intel_process_dri2_buffer_no_separate_stencil(struct intel_context *intel,
    if (!rb)
       return;
 
-   if (rb->region && rb->region->name == buffer->name)
+   if (rb->mt &&
+       rb->mt->region &&
+       rb->mt->region->name == buffer->name)
       return;
 
    if (unlikely(INTEL_DEBUG & DEBUG_DRI)) {
@@ -1133,23 +1045,34 @@ intel_process_dri2_buffer_no_separate_stencil(struct intel_context *intel,
    if (buffer->attachment == __DRI_BUFFER_STENCIL) {
       struct intel_renderbuffer *depth_rb =
 	 intel_get_renderbuffer(fb, BUFFER_DEPTH);
-      identify_depth_and_stencil = depth_rb && depth_rb->region;
+      identify_depth_and_stencil = depth_rb && depth_rb->mt;
    }
 
    if (identify_depth_and_stencil) {
       if (unlikely(INTEL_DEBUG & DEBUG_DRI)) {
 	 fprintf(stderr, "(reusing depth buffer as stencil)\n");
       }
-      intel_region_reference(&rb->region, depth_rb->region);
+      intel_miptree_reference(&rb->mt, depth_rb->mt);
    } else {
-      intel_region_release(&rb->region);
-      rb->region = intel_region_alloc_for_handle(intel->intelScreen,
+      intel_miptree_release(&rb->mt);
+      struct intel_region *region =
+                   intel_region_alloc_for_handle(intel->intelScreen,
 						 buffer->cpp,
 						 drawable->w,
 						 drawable->h,
 						 buffer->pitch / buffer->cpp,
 						 buffer->name,
 						 buffer_name);
+      if (!region)
+	 return;
+
+      rb->mt = intel_miptree_create_for_region(intel,
+                                               GL_TEXTURE_2D,
+                                               intel_rb_format(rb),
+                                               region);
+      intel_region_release(&region);
+      if (!rb->mt)
+	 return;
    }
 
    if (buffer->attachment == __DRI_BUFFER_DEPTH_STENCIL) {
@@ -1162,7 +1085,7 @@ intel_process_dri2_buffer_no_separate_stencil(struct intel_context *intel,
       /* The rb passed in is the BUFFER_DEPTH attachment, and we need
        * to associate this region to BUFFER_STENCIL as well.
        */
-      intel_region_reference(&stencil_rb->region, rb->region);
+      intel_miptree_reference(&stencil_rb->mt, rb->mt);
    }
 }
 
@@ -1242,7 +1165,7 @@ intel_query_dri2_buffers_with_separate_stencil(struct intel_context *intel,
       (*attachments)[i++] = __DRI_BUFFER_DEPTH;
       (*attachments)[i++] = intel_bits_per_pixel(depth_rb);
 
-      if (intel->vtbl.is_hiz_depth_format(intel, depth_rb->Base.Format)) {
+      if (intel->vtbl.is_hiz_depth_format(intel, intel_rb_format(depth_rb))) {
 	 /* Depth and hiz buffer have same bpp. */
 	 (*attachments)[i++] = __DRI_BUFFER_HIZ;
 	 (*attachments)[i++] = intel_bits_per_pixel(depth_rb);
@@ -1250,7 +1173,7 @@ intel_query_dri2_buffers_with_separate_stencil(struct intel_context *intel,
    }
 
    if (stencil_rb) {
-      assert(stencil_rb->Base.Format == MESA_FORMAT_S8);
+      assert(intel_rb_format(stencil_rb) == MESA_FORMAT_S8);
       (*attachments)[i++] = __DRI_BUFFER_STENCIL;
       (*attachments)[i++] = intel_bits_per_pixel(stencil_rb);
    }
@@ -1302,13 +1225,19 @@ intel_process_dri2_buffer_with_separate_stencil(struct intel_context *intel,
    if (!rb)
       return;
 
+   /* Check if we failed to allocate the depth miptree earlier. */
+   if (buffer->attachment == __DRI_BUFFER_HIZ && rb->mt == NULL)
+     return;
+
    /* If the renderbuffer's and DRIbuffer's regions match, then continue. */
    if ((buffer->attachment != __DRI_BUFFER_HIZ &&
-	rb->region &&
-	rb->region->name == buffer->name) ||
+	rb->mt &&
+	rb->mt->region &&
+	rb->mt->region->name == buffer->name) ||
        (buffer->attachment == __DRI_BUFFER_HIZ &&
-	rb->hiz_region &&
-	rb->hiz_region->name == buffer->name)) {
+	rb->mt &&
+	rb->mt->hiz_mt &&
+	rb->mt->hiz_mt->region->name == buffer->name)) {
       return;
    }
 
@@ -1319,39 +1248,59 @@ intel_process_dri2_buffer_with_separate_stencil(struct intel_context *intel,
 	      buffer->cpp, buffer->pitch);
    }
 
-   /*
-    * The stencil buffer has quirky pitch requirements.  From Section
-    * 2.11.5.6.2.1 3DSTATE_STENCIL_BUFFER, field "Surface Pitch":
-    *    The pitch must be set to 2x the value computed based on width, as
-    *    the stencil buffer is stored with two rows interleaved.
-    * If we neglect to double the pitch, then drm_intel_gem_bo_map_gtt()
-    * maps the memory incorrectly.
-    *
-    * To satisfy the pitch requirement, the X driver hackishly allocated
-    * the gem buffer with bpp doubled and height halved. So buffer->cpp is
-    * correct, but drawable->height is not.
-    */
-   int buffer_height = drawable->h;
+   int buffer_width;
+   int buffer_height;
    if (buffer->attachment == __DRI_BUFFER_STENCIL) {
-      buffer_height /= 2;
+      /* The stencil buffer has quirky pitch requirements.  From Section
+       * 2.11.5.6.2.1 3DSTATE_STENCIL_BUFFER, field "Surface Pitch":
+       *    The pitch must be set to 2x the value computed based on width, as
+       *    the stencil buffer is stored with two rows interleaved.
+       *
+       * To satisfy the pitch requirement, the X driver allocated the region
+       * with the following dimensions.
+       */
+       buffer_width = ALIGN(drawable->w, 64);
+       buffer_height = ALIGN(ALIGN(drawable->h, 2) / 2, 64);
+   } else {
+       buffer_width = drawable->w;
+       buffer_height = drawable->h;
+   }
+
+   /* Release the buffer storage now in case we have to return early
+    * due to failure to allocate new storage.
+    */
+   if (buffer->attachment == __DRI_BUFFER_HIZ) {
+      assert(rb->mt);
+      intel_miptree_release(&rb->mt->hiz_mt);
+   } else {
+      intel_miptree_release(&rb->mt);
    }
 
    struct intel_region *region =
       intel_region_alloc_for_handle(intel->intelScreen,
 				    buffer->cpp,
-				    drawable->w,
+				    buffer_width,
 				    buffer_height,
 				    buffer->pitch / buffer->cpp,
 				    buffer->name,
 				    buffer_name);
+   if (!region)
+      return;
 
-   if (buffer->attachment == __DRI_BUFFER_HIZ) {
-      intel_region_reference(&rb->hiz_region, region);
-   } else {
-      intel_region_reference(&rb->region, region);
-   }
-
+   struct intel_mipmap_tree *mt =
+      intel_miptree_create_for_region(intel,
+				      GL_TEXTURE_2D,
+				      intel_rb_format(rb),
+				      region);
    intel_region_release(&region);
+
+   /* Associate buffer with new storage. */
+   if (buffer->attachment == __DRI_BUFFER_HIZ) {
+      assert(rb->mt);
+      rb->mt->hiz_mt = mt;
+   } else {
+      rb->mt = mt;
+   }
 }
 
 /**
@@ -1425,10 +1374,10 @@ intel_verify_dri2_has_hiz(struct intel_context *intel,
        */
       struct intel_renderbuffer *depth_rb =
 	 intel_get_renderbuffer(fb, BUFFER_DEPTH);
-      assert(stencil_rb->Base.Format == MESA_FORMAT_S8);
-      assert(depth_rb && depth_rb->Base.Format == MESA_FORMAT_X8_Z24);
+      assert(intel_rb_format(stencil_rb) == MESA_FORMAT_S8);
+      assert(depth_rb && intel_rb_format(depth_rb) == MESA_FORMAT_X8_Z24);
 
-      if (stencil_rb->region->tiling == I915_TILING_NONE) {
+      if (stencil_rb->mt->region->tiling == I915_TILING_NONE) {
 	 /*
 	  * The stencil buffer is actually W tiled. The region's tiling is
 	  * I915_TILING_NONE, however, because the GTT is incapable of W
@@ -1460,8 +1409,8 @@ intel_verify_dri2_has_hiz(struct intel_context *intel,
 	 /* 2. Create new depth/stencil renderbuffer. */
 	 struct intel_renderbuffer *depth_stencil_rb =
 	    intel_create_renderbuffer(MESA_FORMAT_S8_Z24);
-	 _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &depth_stencil_rb->Base);
-	 _mesa_add_renderbuffer(fb, BUFFER_STENCIL, &depth_stencil_rb->Base);
+	 _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &depth_stencil_rb->Base.Base);
+	 _mesa_add_renderbuffer(fb, BUFFER_STENCIL, &depth_stencil_rb->Base.Base);
 
 	 /* 3. Append DRI2BufferDepthStencil to attachment list. */
 	 int old_count = *count;
@@ -1509,11 +1458,21 @@ intel_verify_dri2_has_hiz(struct intel_context *intel,
 					     / depth_stencil_buffer->cpp,
 					  depth_stencil_buffer->name,
 					  "dri2 depth / stencil buffer");
-	 intel_region_reference(&intel_get_renderbuffer(fb, BUFFER_DEPTH)->region,
-				region);
-	 intel_region_reference(&intel_get_renderbuffer(fb, BUFFER_STENCIL)->region,
-				region);
+	 if (!region)
+	    return;
+
+	 struct intel_mipmap_tree *mt =
+	       intel_miptree_create_for_region(intel,
+	                                       GL_TEXTURE_2D,
+	                                       intel_rb_format(depth_stencil_rb),
+	                                       region);
 	 intel_region_release(&region);
+	 if (!mt)
+	    return;
+
+	 intel_miptree_reference(&intel_get_renderbuffer(fb, BUFFER_DEPTH)->mt, mt);
+	 intel_miptree_reference(&intel_get_renderbuffer(fb, BUFFER_STENCIL)->mt, mt);
+	 intel_miptree_release(&mt);
       }
    }
 

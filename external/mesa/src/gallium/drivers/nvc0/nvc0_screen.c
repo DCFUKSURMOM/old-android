@@ -69,15 +69,14 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
    switch (param) {
    case PIPE_CAP_MAX_COMBINED_SAMPLERS:
-      return 64;
+      return 16 * PIPE_SHADER_TYPES; /* NOTE: should not count COMPUTE */
    case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
-      return 13;
-   case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
-      return 10;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
-      return 13;
+      return 15;
+   case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
+      return 12;
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-      return 8192;
+      return 2048;
    case PIPE_CAP_MIN_TEXEL_OFFSET:
       return -8;
    case PIPE_CAP_MAX_TEXEL_OFFSET:
@@ -92,11 +91,10 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
       return 0;
    case PIPE_CAP_TWO_SIDED_STENCIL:
-   case PIPE_CAP_DEPTH_CLAMP:
+   case PIPE_CAP_DEPTH_CLIP_DISABLE:
    case PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE:
    case PIPE_CAP_POINT_SPRITE:
       return 1;
-   case PIPE_CAP_GLSL:
    case PIPE_CAP_SM3:
       return 1;
    case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -105,9 +103,13 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_TIMER_QUERY:
    case PIPE_CAP_OCCLUSION_QUERY:
+   case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
       return 1;
-   case PIPE_CAP_STREAM_OUTPUT:
-      return 0;
+   case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
+      return 4;
+   case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
+   case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
+      return 128;
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
    case PIPE_CAP_INDEP_BLEND_ENABLE:
    case PIPE_CAP_INDEP_BLEND_FUNC:
@@ -127,6 +129,9 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONDITIONAL_RENDER:
    case PIPE_CAP_TEXTURE_BARRIER:
       return 1;
+   case PIPE_CAP_TGSI_CAN_COMPACT_VARYINGS:
+   case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
+      return 0; /* state trackers will know better */
    default:
       NOUVEAU_ERR("unknown PIPE_CAP %d\n", param);
       return 0;
@@ -161,7 +166,9 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
    case PIPE_SHADER_CAP_MAX_INPUTS:
       if (shader == PIPE_SHADER_VERTEX)
          return 32;
-      return 0x300 / 16;
+      if (shader == PIPE_SHADER_FRAGMENT)
+         return (0x200 + 0x20 + 0x80) / 16; /* generic + colors + TexCoords */
+      return (0x200 + 0x40 + 0x80) / 16; /* without 0x60 for per-patch inputs */
    case PIPE_SHADER_CAP_MAX_CONSTS:
       return 65536 / 16;
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
@@ -185,7 +192,13 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
    case PIPE_SHADER_CAP_INTEGERS:
       return 1;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
+      return 16; /* would be 32 in linked (OpenGL-style) mode */
+      /*
+   case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLER_VIEWS:
       return 32;
+      */
+   case PIPE_SHADER_CAP_OUTPUT_READ:
+      return 0; /* shader != PIPE_SHADER_TESSELLATION_CONTROL; */
    default:
       NOUVEAU_ERR("unknown PIPE_SHADER_CAP %d\n", param);
       return 0;
@@ -193,19 +206,20 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
 }
 
 static float
-nvc0_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_cap param)
+nvc0_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 {
    switch (param) {
-   case PIPE_CAP_MAX_LINE_WIDTH:
-   case PIPE_CAP_MAX_LINE_WIDTH_AA:
+   case PIPE_CAPF_MAX_LINE_WIDTH:
+   case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 10.0f;
-   case PIPE_CAP_MAX_POINT_WIDTH:
-   case PIPE_CAP_MAX_POINT_WIDTH_AA:
-      return 64.0f;
-   case PIPE_CAP_MAX_TEXTURE_ANISOTROPY:
+   case PIPE_CAPF_MAX_POINT_WIDTH:
+      return 63.0f;
+   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+      return 63.375f;
+   case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0f;
-   case PIPE_CAP_MAX_TEXTURE_LOD_BIAS:
-      return 4.0f;
+   case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
+      return 15.0f;
    default:
       NOUVEAU_ERR("unknown PIPE_CAP %d\n", param);
       return 0.0f;
@@ -221,7 +235,8 @@ nvc0_screen_destroy(struct pipe_screen *pscreen)
       nouveau_fence_wait(screen->base.fence.current);
       nouveau_fence_ref(NULL, &screen->base.fence.current);
    }
-   screen->base.channel->user_private = NULL;
+   if (screen->base.channel)
+      screen->base.channel->user_private = NULL;
 
    if (screen->blitctx)
       FREE(screen->blitctx);
@@ -367,7 +382,7 @@ nvc0_screen_fence_update(struct pipe_screen *pscreen)
    } while(0)
 
 struct pipe_screen *
-nvc0_screen_create(struct pipe_winsys *ws, struct nouveau_device *dev)
+nvc0_screen_create(struct nouveau_device *dev)
 {
    struct nvc0_screen *screen;
    struct nouveau_channel *chan;
@@ -390,7 +405,6 @@ nvc0_screen_create(struct pipe_winsys *ws, struct nouveau_device *dev)
    chan = screen->base.channel;
    chan->user_private = screen;
 
-   pscreen->winsys = ws;
    pscreen->destroy = nvc0_screen_destroy;
    pscreen->context_create = nvc0_create;
    pscreen->is_format_supported = nvc0_screen_is_format_supported;
@@ -457,6 +471,12 @@ nvc0_screen_create(struct pipe_winsys *ws, struct nouveau_device *dev)
 
    BEGIN_RING(chan, RING_3D(COND_MODE), 1);
    OUT_RING  (chan, NVC0_3D_COND_MODE_ALWAYS);
+
+   if (debug_get_bool_option("NOUVEAU_SHADER_WATCHDOG", TRUE)) {
+      /* kill shaders after about 1 second (at 100 MHz) */
+      BEGIN_RING(chan, RING_3D(WATCHDOG_TIMER), 1);
+      OUT_RING  (chan, 0x17);
+   }
 
    BEGIN_RING(chan, RING_3D(RT_CONTROL), 1);
    OUT_RING  (chan, 1);

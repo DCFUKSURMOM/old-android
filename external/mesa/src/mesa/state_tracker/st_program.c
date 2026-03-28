@@ -194,7 +194,7 @@ st_prepare_vertex_program(struct gl_context *ctx,
     * and TGSI generic input indexes, plus input attrib semantic info.
     */
    for (attr = 0; attr < VERT_ATTRIB_MAX; attr++) {
-      if (stvp->Base.Base.InputsRead & (1 << attr)) {
+      if ((stvp->Base.Base.InputsRead & BITFIELD64_BIT(attr)) != 0) {
          stvp->input_to_index[attr] = stvp->num_inputs;
          stvp->index_to_input[stvp->num_inputs] = attr;
          stvp->num_inputs++;
@@ -244,8 +244,20 @@ st_prepare_vertex_program(struct gl_context *ctx,
             stvp->output_semantic_name[slot] = TGSI_SEMANTIC_PSIZE;
             stvp->output_semantic_index[slot] = 0;
             break;
+         case VERT_RESULT_CLIP_DIST0:
+            stvp->output_semantic_name[slot] = TGSI_SEMANTIC_CLIPDIST;
+            stvp->output_semantic_index[slot] = 0;
+            break;
+         case VERT_RESULT_CLIP_DIST1:
+            stvp->output_semantic_name[slot] = TGSI_SEMANTIC_CLIPDIST;
+            stvp->output_semantic_index[slot] = 1;
+            break;
          case VERT_RESULT_EDGE:
             assert(0);
+            break;
+         case VERT_RESULT_CLIP_VERTEX:
+            stvp->output_semantic_name[slot] = TGSI_SEMANTIC_CLIPVERTEX;
+            stvp->output_semantic_index[slot] = 0;
             break;
 
          case VERT_RESULT_TEX0:
@@ -367,6 +379,12 @@ st_translate_vertex_program(struct st_context *st,
 
    ureg_destroy( ureg );
 
+   if (stvp->glsl_to_tgsi) {
+      st_translate_stream_output_info(stvp->glsl_to_tgsi,
+                                      stvp->result_to_output,
+                                      &vpv->tgsi.stream_output);
+   }
+
    vpv->driver_shader = pipe->create_vs_state(pipe, &vpv->tgsi);
 
    if (ST_DEBUG & DEBUG_TGSI) {
@@ -416,20 +434,27 @@ st_get_vp_variant(struct st_context *st,
    return vpv;
 }
 
-static int st_translate_interp(enum glsl_interp_qualifier glsl_qual)
+
+static unsigned
+st_translate_interp(enum glsl_interp_qualifier glsl_qual, bool is_color)
 {
    switch (glsl_qual) {
    case INTERP_QUALIFIER_NONE:
+      if (is_color)
+         return TGSI_INTERPOLATE_COLOR;
+      return TGSI_INTERPOLATE_PERSPECTIVE;
    case INTERP_QUALIFIER_SMOOTH:
       return TGSI_INTERPOLATE_PERSPECTIVE;
    case INTERP_QUALIFIER_FLAT:
       return TGSI_INTERPOLATE_CONSTANT;
    case INTERP_QUALIFIER_NOPERSPECTIVE:
       return TGSI_INTERPOLATE_LINEAR;
+   default:
+      assert(0 && "unexpected interp mode in st_translate_interp()");
+      return TGSI_INTERPOLATE_PERSPECTIVE;
    }
-   assert(0);
-   return TGSI_INTERPOLATE_PERSPECTIVE;
 }
+
 
 /**
  * Translate a Mesa fragment shader into a TGSI shader using extra info in
@@ -486,7 +511,7 @@ st_translate_fragment_program(struct st_context *st,
       GLuint inputMapping[FRAG_ATTRIB_MAX];
       GLuint interpMode[PIPE_MAX_SHADER_INPUTS];  /* XXX size? */
       GLuint attr;
-      const GLbitfield inputsRead = stfp->Base.Base.InputsRead;
+      const GLbitfield64 inputsRead = stfp->Base.Base.InputsRead;
       struct ureg_program *ureg;
 
       GLboolean write_all = GL_FALSE;
@@ -506,7 +531,7 @@ st_translate_fragment_program(struct st_context *st,
        * Convert Mesa program inputs to TGSI input register semantics.
        */
       for (attr = 0; attr < FRAG_ATTRIB_MAX; attr++) {
-         if (inputsRead & (1 << attr)) {
+         if ((inputsRead & BITFIELD64_BIT(attr)) != 0) {
             const GLuint slot = fs_num_inputs++;
 
             inputMapping[attr] = slot;
@@ -520,12 +545,14 @@ st_translate_fragment_program(struct st_context *st,
             case FRAG_ATTRIB_COL0:
                input_semantic_name[slot] = TGSI_SEMANTIC_COLOR;
                input_semantic_index[slot] = 0;
-               interpMode[slot] = TGSI_INTERPOLATE_LINEAR;
+               interpMode[slot] = st_translate_interp(stfp->Base.InterpQualifier[attr],
+                                                      TRUE);
                break;
             case FRAG_ATTRIB_COL1:
                input_semantic_name[slot] = TGSI_SEMANTIC_COLOR;
                input_semantic_index[slot] = 1;
-               interpMode[slot] = TGSI_INTERPOLATE_LINEAR;
+               interpMode[slot] = st_translate_interp(stfp->Base.InterpQualifier[attr],
+                                                      TRUE);
                break;
             case FRAG_ATTRIB_FOGC:
                input_semantic_name[slot] = TGSI_SEMANTIC_FOG;
@@ -536,6 +563,16 @@ st_translate_fragment_program(struct st_context *st,
                input_semantic_name[slot] = TGSI_SEMANTIC_FACE;
                input_semantic_index[slot] = 0;
                interpMode[slot] = TGSI_INTERPOLATE_CONSTANT;
+               break;
+            case FRAG_ATTRIB_CLIP_DIST0:
+               input_semantic_name[slot] = TGSI_SEMANTIC_CLIPDIST;
+               input_semantic_index[slot] = 0;
+               interpMode[slot] = TGSI_INTERPOLATE_LINEAR;
+               break;
+            case FRAG_ATTRIB_CLIP_DIST1:
+               input_semantic_name[slot] = TGSI_SEMANTIC_CLIPDIST;
+               input_semantic_index[slot] = 1;
+               interpMode[slot] = TGSI_INTERPOLATE_LINEAR;
                break;
                /* In most cases, there is nothing special about these
                 * inputs, so adopt a convention to use the generic
@@ -572,7 +609,8 @@ st_translate_fragment_program(struct st_context *st,
                if (attr == FRAG_ATTRIB_PNTC)
                   interpMode[slot] = TGSI_INTERPOLATE_LINEAR;
                else
-                  interpMode[slot] = st_translate_interp(stfp->Base.InterpQualifier[attr]);
+                  interpMode[slot] = st_translate_interp(stfp->Base.InterpQualifier[attr],
+                                                         FALSE);
                break;
             }
          }
@@ -632,8 +670,10 @@ st_translate_fragment_program(struct st_context *st,
       }
 
       ureg = ureg_create( TGSI_PROCESSOR_FRAGMENT );
-      if (ureg == NULL)
+      if (ureg == NULL) {
+         FREE(variant);
          return NULL;
+      }
 
       if (ST_DEBUG & DEBUG_MESA) {
          _mesa_print_program(&stfp->Base.Base);
@@ -642,6 +682,25 @@ st_translate_fragment_program(struct st_context *st,
       }
       if (write_all == GL_TRUE)
          ureg_property_fs_color0_writes_all_cbufs(ureg, 1);
+
+      if (stfp->Base.FragDepthLayout != FRAG_DEPTH_LAYOUT_NONE) {
+         switch (stfp->Base.FragDepthLayout) {
+         case FRAG_DEPTH_LAYOUT_ANY:
+            ureg_property_fs_depth_layout(ureg, TGSI_FS_DEPTH_LAYOUT_ANY);
+            break;
+         case FRAG_DEPTH_LAYOUT_GREATER:
+            ureg_property_fs_depth_layout(ureg, TGSI_FS_DEPTH_LAYOUT_GREATER);
+            break;
+         case FRAG_DEPTH_LAYOUT_LESS:
+            ureg_property_fs_depth_layout(ureg, TGSI_FS_DEPTH_LAYOUT_LESS);
+            break;
+         case FRAG_DEPTH_LAYOUT_UNCHANGED:
+            ureg_property_fs_depth_layout(ureg, TGSI_FS_DEPTH_LAYOUT_UNCHANGED);
+            break;
+         default:
+            assert(0);
+         }
+      }
 
       if (stfp->glsl_to_tgsi)
          st_translate_program(st->ctx,
@@ -743,7 +802,7 @@ st_translate_geometry_program(struct st_context *st,
    GLuint outputMapping[GEOM_RESULT_MAX];
    struct pipe_context *pipe = st->pipe;
    GLuint attr;
-   const GLbitfield inputsRead = stgp->Base.Base.InputsRead;
+   const GLbitfield64 inputsRead = stgp->Base.Base.InputsRead;
    GLuint vslot = 0;
    GLuint num_generic = 0;
 
@@ -784,7 +843,7 @@ st_translate_geometry_program(struct st_context *st,
     * Convert Mesa program inputs to TGSI input register semantics.
     */
    for (attr = 0; attr < GEOM_ATTRIB_MAX; attr++) {
-      if (inputsRead & (1 << attr)) {
+      if ((inputsRead & BITFIELD64_BIT(attr)) != 0) {
          const GLuint slot = gs_num_inputs;
 
          gs_num_inputs++;
@@ -968,6 +1027,12 @@ st_translate_geometry_program(struct st_context *st,
    stgp->num_inputs = gs_num_inputs;
    stgp->tgsi.tokens = ureg_get_tokens( ureg, NULL );
    ureg_destroy( ureg );
+
+   if (stgp->glsl_to_tgsi) {
+      st_translate_stream_output_info(stgp->glsl_to_tgsi,
+                                      outputMapping,
+                                      &stgp->tgsi.stream_output);
+   }
 
    /* fill in new variant */
    gpv->driver_shader = pipe->create_gs_state(pipe, &stgp->tgsi);

@@ -150,6 +150,7 @@ egl_g3d_create_context(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *conf,
    struct egl_g3d_config *gconf = egl_g3d_config(conf);
    struct egl_g3d_context *gctx;
    struct st_context_attribs stattribs;
+   enum st_context_error ctx_err = 0;
 
    gctx = CALLOC_STRUCT(egl_g3d_context);
    if (!gctx) {
@@ -172,8 +173,8 @@ egl_g3d_create_context(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *conf,
       return NULL;
    }
 
-   gctx->stctxi = gctx->stapi->create_context(gctx->stapi, gdpy->smapi,
-         &stattribs, (gshare) ? gshare->stctxi : NULL);
+   gctx->stctxi = gctx->stapi->create_context(gctx->stapi, gdpy->smapi, 
+         &stattribs, &ctx_err, (gshare) ? gshare->stctxi : NULL);
    if (!gctx->stctxi) {
       FREE(gctx);
       return NULL;
@@ -295,6 +296,10 @@ egl_g3d_create_surface(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *conf,
    if (gsurf->base.RenderBuffer == EGL_SINGLE_BUFFER &&
        gconf->stvis.buffer_mask & ST_ATTACHMENT_FRONT_LEFT_MASK)
       gsurf->stvis.render_buffer = ST_ATTACHMENT_FRONT_LEFT;
+
+   /* surfaces can always be posted when the display supports it */
+   if (dpy->Extensions.NV_post_sub_buffer)
+      gsurf->base.PostSubBufferSupportedNV = EGL_TRUE;
 
    gsurf->stfbi = egl_g3d_create_st_framebuffer(&gsurf->base);
    if (!gsurf->stfbi) {
@@ -546,7 +551,8 @@ egl_g3d_make_current(_EGLDriver *drv, _EGLDisplay *dpy,
 }
 
 static EGLBoolean
-egl_g3d_swap_buffers(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf)
+swap_buffers(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf,
+             EGLint num_rects, const EGLint *rects, EGLBoolean preserve)
 {
    struct egl_g3d_surface *gsurf = egl_g3d_surface(surf);
    _EGLContext *ctx = _eglGetCurrentContext();
@@ -572,11 +578,59 @@ egl_g3d_swap_buffers(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf)
 
    memset(&ctrl, 0, sizeof(ctrl));
    ctrl.natt = NATIVE_ATTACHMENT_BACK_LEFT;
-   ctrl.preserve = (gsurf->base.SwapBehavior == EGL_BUFFER_PRESERVED);
+   ctrl.preserve = preserve;
    ctrl.swap_interval = gsurf->base.SwapInterval;
    ctrl.premultiplied_alpha = (gsurf->base.VGAlphaFormat == EGL_VG_ALPHA_FORMAT_PRE);
+   ctrl.num_rects = num_rects;
+   ctrl.rects = rects;
 
    return gsurf->native->present(gsurf->native, &ctrl);
+}
+
+static EGLBoolean
+egl_g3d_swap_buffers(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf)
+{
+   struct egl_g3d_surface *gsurf = egl_g3d_surface(surf);
+
+   return swap_buffers(drv, dpy, surf, 0, NULL,
+                       (gsurf->base.SwapBehavior == EGL_BUFFER_PRESERVED));
+}
+
+#ifdef EGL_NOK_swap_region
+static EGLBoolean
+egl_g3d_swap_buffers_region(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf,
+                            EGLint num_rects, const EGLint *rects)
+{
+   /* Note: y=0=top */
+   return swap_buffers(drv, dpy, surf, num_rects, rects, EGL_TRUE);
+}
+#endif /* EGL_NOK_swap_region */
+
+static EGLBoolean
+egl_g3d_post_sub_buffer(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf,
+                        EGLint x, EGLint y, EGLint width, EGLint height)
+{
+   EGLint rect[4];
+
+   if (x < 0 || y < 0 || width < 0 || height < 0)
+      return _eglError(EGL_BAD_PARAMETER, "eglPostSubBufferNV");
+
+   /* clamp */
+   if (x + width > surf->Width)
+      width = surf->Width - x;
+   if (y + height > surf->Height)
+      height = surf->Height - y;
+
+   if (width <= 0 || height <= 0)
+      return EGL_TRUE;
+
+   rect[0] = x;
+   /* Note: y=0=bottom */
+   rect[1] = surf->Height - y - height;
+   rect[2] = width;
+   rect[3] = height;
+
+   return swap_buffers(drv, dpy, surf, 1, rect, EGL_TRUE);
 }
 
 static EGLBoolean
@@ -856,15 +910,19 @@ egl_g3d_init_driver_api(_EGLDriver *drv)
 
 #endif
 
-#ifdef EGL_KHR_reusable_sync
    drv->API.CreateSyncKHR = egl_g3d_create_sync;
    drv->API.DestroySyncKHR = egl_g3d_destroy_sync;
    drv->API.ClientWaitSyncKHR = egl_g3d_client_wait_sync;
    drv->API.SignalSyncKHR = egl_g3d_signal_sync;
-#endif
 
 #ifdef EGL_MESA_screen_surface
    drv->API.CreateScreenSurfaceMESA = egl_g3d_create_screen_surface;
    drv->API.ShowScreenSurfaceMESA = egl_g3d_show_screen_surface;
 #endif
+
+#ifdef EGL_NOK_swap_region
+   drv->API.SwapBuffersRegionNOK = egl_g3d_swap_buffers_region;
+#endif
+
+   drv->API.PostSubBufferNV = egl_g3d_post_sub_buffer;
 }

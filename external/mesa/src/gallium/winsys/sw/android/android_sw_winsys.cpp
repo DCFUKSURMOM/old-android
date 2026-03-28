@@ -32,9 +32,12 @@
 #include "util/u_format.h"
 #include "state_tracker/sw_winsys.h"
 
+#include <hardware/gralloc.h>
 #include <utils/Errors.h>
 
-#include <hardware/gralloc.h>
+#if ANDROID_VERSION < 0x0300
+#include <private/ui/sw_gralloc_handle.h>
+#endif
 
 #include "android_sw_winsys.h"
 
@@ -104,6 +107,14 @@ android_displaytarget_unmap(struct sw_winsys *ws,
    struct android_sw_winsys *droid = android_sw_winsys(ws);
    struct android_sw_displaytarget *adt = android_sw_displaytarget(dt);
 
+#if ANDROID_VERSION < 0x0300
+   /* try sw_gralloc first */
+   if (adt->mapped && sw_gralloc_handle_t::validate(adt->handle) >= 0) {
+      adt->mapped = NULL;
+      return;
+   }
+#endif
+
    if (adt->mapped) {
       droid->grmod->unlock(droid->grmod, adt->handle);
       adt->mapped = NULL;
@@ -117,6 +128,17 @@ android_displaytarget_map(struct sw_winsys *ws,
 {
    struct android_sw_winsys *droid = android_sw_winsys(ws);
    struct android_sw_displaytarget *adt = android_sw_displaytarget(dt);
+
+#if ANDROID_VERSION < 0x0300
+   /* try sw_gralloc first */
+   if (sw_gralloc_handle_t::validate(adt->handle) >= 0) {
+      const sw_gralloc_handle_t *swhandle =
+         reinterpret_cast<const sw_gralloc_handle_t *>(adt->handle);
+      adt->mapped = reinterpret_cast<void *>(swhandle->base);
+
+      return adt->mapped;
+   }
+#endif
 
    if (!adt->mapped) {
       /* lock the buffer for CPU access */

@@ -80,7 +80,8 @@ typedef struct radeon_context *radeonContextPtr;
 
 struct radeon_renderbuffer
 {
-	struct gl_renderbuffer base;
+	struct swrast_renderbuffer base;
+
 	struct radeon_bo *bo;
 	unsigned int cpp;
 	/* unsigned int offset; */
@@ -89,6 +90,8 @@ struct radeon_renderbuffer
 	struct radeon_bo *map_bo;
 	GLbitfield map_mode;
 	int map_x, map_y, map_w, map_h;
+	int map_pitch;
+	void *map_buffer;
 
 	uint32_t draw_offset; /* FBO */
 	/* boo Xorg 6.8.2 compat */
@@ -174,6 +177,7 @@ struct _radeon_texture_image {
 	 */
 	struct _radeon_mipmap_tree *mt;
 	struct radeon_bo *bo;
+	GLboolean used_as_render_target;
 };
 
 
@@ -215,8 +219,6 @@ struct radeon_tex_obj {
 	GLuint pp_txpitch;	/* npot only */
 	GLuint pp_border_color;
 	GLuint pp_cubic_faces;	/* cube face 1,2,3,4 log2 sizes */
-
-        GLuint pp_txfilter_1;	/*  r300 */
 
 	GLboolean border_fallback;
 };
@@ -411,7 +413,7 @@ struct radeon_context {
    GLuint TclFallback;
    GLuint Fallback;
    GLuint NewGLState;
-   DECLARE_RENDERINPUTS(tnl_index_bitset);	/* index of bits for last tnl_install_attrs */
+   GLbitfield64 tnl_index_bitset;	/* index of bits for last tnl_install_attrs */
 
    /* Drawable information */
    unsigned int lastStamp;
@@ -440,7 +442,6 @@ struct radeon_context {
    struct radeon_debug debug;
 
   drm_clip_rect_t fboRect;
-  GLboolean constant_cliprect; /* use for FBO or DRI2 rendering */
   GLboolean front_cliprects;
 
    /**
@@ -484,7 +485,7 @@ struct radeon_context {
 	   void (*free_context)(struct gl_context *ctx);
 	   void (*emit_query_finish)(radeonContextPtr radeon);
 	   void (*update_scissor)(struct gl_context *ctx);
-	   unsigned (*check_blit)(gl_format mesa_format);
+	   unsigned (*check_blit)(gl_format mesa_format, uint32_t dst_pitch);
 	   unsigned (*blit)(struct gl_context *ctx,
                         struct radeon_bo *src_bo,
                         intptr_t src_offset,

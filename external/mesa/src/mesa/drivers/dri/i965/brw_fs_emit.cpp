@@ -143,6 +143,31 @@ fs_visitor::generate_linterp(fs_inst *inst,
 }
 
 void
+fs_visitor::generate_math1_gen7(fs_inst *inst,
+			        struct brw_reg dst,
+			        struct brw_reg src0)
+{
+   assert(inst->mlen == 0);
+   brw_math(p, dst,
+	    brw_math_function(inst->opcode),
+	    inst->saturate ? BRW_MATH_SATURATE_SATURATE
+			   : BRW_MATH_SATURATE_NONE,
+	    0, src0,
+	    BRW_MATH_DATA_VECTOR,
+	    BRW_MATH_PRECISION_FULL);
+}
+
+void
+fs_visitor::generate_math2_gen7(fs_inst *inst,
+			        struct brw_reg dst,
+			        struct brw_reg src0,
+			        struct brw_reg src1)
+{
+   assert(inst->mlen == 0);
+   brw_math2(p, dst, brw_math_function(inst->opcode), src0, src1);
+}
+
+void
 fs_visitor::generate_math1_gen6(fs_inst *inst,
 			        struct brw_reg dst,
 			        struct brw_reg src0)
@@ -231,13 +256,26 @@ fs_visitor::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src)
    int msg_type = -1;
    int rlen = 4;
    uint32_t simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD8;
+   uint32_t return_format;
+
+   switch (dst.type) {
+   case BRW_REGISTER_TYPE_D:
+      return_format = BRW_SAMPLER_RETURN_FORMAT_SINT32;
+      break;
+   case BRW_REGISTER_TYPE_UD:
+      return_format = BRW_SAMPLER_RETURN_FORMAT_UINT32;
+      break;
+   default:
+      return_format = BRW_SAMPLER_RETURN_FORMAT_FLOAT32;
+      break;
+   }
 
    if (c->dispatch_width == 16)
       simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD16;
 
    if (intel->gen >= 5) {
       switch (inst->opcode) {
-      case FS_OPCODE_TEX:
+      case SHADER_OPCODE_TEX:
 	 if (inst->shadow_compare) {
 	    msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_COMPARE;
 	 } else {
@@ -251,21 +289,21 @@ fs_visitor::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src)
 	    msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_BIAS;
 	 }
 	 break;
-      case FS_OPCODE_TXL:
+      case SHADER_OPCODE_TXL:
 	 if (inst->shadow_compare) {
 	    msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LOD_COMPARE;
 	 } else {
 	    msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LOD;
 	 }
 	 break;
-      case FS_OPCODE_TXS:
+      case SHADER_OPCODE_TXS:
 	 msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO;
 	 break;
-      case FS_OPCODE_TXD:
+      case SHADER_OPCODE_TXD:
 	 /* There is no sample_d_c message; comparisons are done manually */
 	 msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_DERIVS;
 	 break;
-      case FS_OPCODE_TXF:
+      case SHADER_OPCODE_TXF:
 	 msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LD;
 	 break;
       default:
@@ -274,7 +312,7 @@ fs_visitor::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src)
       }
    } else {
       switch (inst->opcode) {
-      case FS_OPCODE_TEX:
+      case SHADER_OPCODE_TEX:
 	 /* Note that G45 and older determines shadow compare and dispatch width
 	  * from message length for most messages.
 	  */
@@ -296,7 +334,7 @@ fs_visitor::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src)
 	    simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD16;
 	 }
 	 break;
-      case FS_OPCODE_TXL:
+      case SHADER_OPCODE_TXL:
 	 if (inst->shadow_compare) {
 	    assert(inst->mlen == 6);
 	    msg_type = BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE_LOD_COMPARE;
@@ -306,17 +344,17 @@ fs_visitor::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src)
 	    simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD16;
 	 }
 	 break;
-      case FS_OPCODE_TXD:
+      case SHADER_OPCODE_TXD:
 	 /* There is no sample_d_c message; comparisons are done manually */
 	 assert(inst->mlen == 7 || inst->mlen == 10);
 	 msg_type = BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE_GRADIENTS;
 	 break;
-      case FS_OPCODE_TXF:
+      case SHADER_OPCODE_TXF:
 	 assert(inst->mlen == 9);
 	 msg_type = BRW_SAMPLER_MESSAGE_SIMD16_LD;
 	 simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD16;
 	 break;
-      case FS_OPCODE_TXS:
+      case SHADER_OPCODE_TXS:
 	 assert(inst->mlen == 3);
 	 msg_type = BRW_SAMPLER_MESSAGE_SIMD16_RESINFO;
 	 simd_mode = BRW_SAMPLER_SIMD_MODE_SIMD16;
@@ -344,7 +382,8 @@ fs_visitor::generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src)
 	      rlen,
 	      inst->mlen,
 	      inst->header_present,
-	      simd_mode);
+	      simd_mode,
+	      return_format);
 }
 
 
@@ -534,6 +573,23 @@ fs_visitor::generate_pull_constant_load(fs_inst *inst, struct brw_reg dst)
    }
 }
 
+static uint32_t brw_file_from_reg(fs_reg *reg)
+{
+   switch (reg->file) {
+   case ARF:
+      return BRW_ARCHITECTURE_REGISTER_FILE;
+   case GRF:
+      return BRW_GENERAL_REGISTER_FILE;
+   case MRF:
+      return BRW_MESSAGE_REGISTER_FILE;
+   case IMM:
+      return BRW_IMMEDIATE_VALUE;
+   default:
+      assert(!"not reached");
+      return BRW_GENERAL_REGISTER_FILE;
+   }
+}
+
 static struct brw_reg
 brw_reg_from_fs_reg(fs_reg *reg)
 {
@@ -544,9 +600,9 @@ brw_reg_from_fs_reg(fs_reg *reg)
    case ARF:
    case MRF:
       if (reg->smear == -1) {
-	 brw_reg = brw_vec8_reg(reg->file, reg->reg, 0);
+	 brw_reg = brw_vec8_reg(brw_file_from_reg(reg), reg->reg, 0);
       } else {
-	 brw_reg = brw_vec1_reg(reg->file, reg->reg, reg->smear);
+	 brw_reg = brw_vec1_reg(brw_file_from_reg(reg), reg->reg, reg->smear);
       }
       brw_reg = retype(brw_reg, reg->type);
       if (reg->sechalf)
@@ -599,14 +655,6 @@ fs_visitor::generate_code()
    int last_native_inst = p->nr_insn;
    const char *last_annotation_string = NULL;
    ir_instruction *last_annotation_ir = NULL;
-
-   int loop_stack_array_size = 16;
-   int loop_stack_depth = 0;
-   brw_instruction **loop_stack =
-      rzalloc_array(this->mem_ctx, brw_instruction *, loop_stack_array_size);
-   int *if_depth_in_loop =
-      rzalloc_array(this->mem_ctx, int, loop_stack_array_size);
-
 
    if (unlikely(INTEL_DEBUG & DEBUG_WM)) {
       printf("Native code for fragment shader %d (%d-wide dispatch):\n",
@@ -727,7 +775,6 @@ fs_visitor::generate_code()
 	 } else {
 	    brw_IF(p, c->dispatch_width == 16 ? BRW_EXECUTE_16 : BRW_EXECUTE_8);
 	 }
-	 if_depth_in_loop[loop_stack_depth]++;
 	 break;
 
       case BRW_OPCODE_ELSE:
@@ -735,59 +782,27 @@ fs_visitor::generate_code()
 	 break;
       case BRW_OPCODE_ENDIF:
 	 brw_ENDIF(p);
-	 if_depth_in_loop[loop_stack_depth]--;
 	 break;
 
       case BRW_OPCODE_DO:
-	 loop_stack[loop_stack_depth++] = brw_DO(p, BRW_EXECUTE_8);
-	 if (loop_stack_array_size <= loop_stack_depth) {
-	    loop_stack_array_size *= 2;
-	    loop_stack = reralloc(this->mem_ctx, loop_stack, brw_instruction *,
-				  loop_stack_array_size);
-	    if_depth_in_loop = reralloc(this->mem_ctx, if_depth_in_loop, int,
-				        loop_stack_array_size);
-	 }
-	 if_depth_in_loop[loop_stack_depth] = 0;
+	 brw_DO(p, BRW_EXECUTE_8);
 	 break;
 
       case BRW_OPCODE_BREAK:
-	 brw_BREAK(p, if_depth_in_loop[loop_stack_depth]);
+	 brw_BREAK(p);
 	 brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 	 break;
       case BRW_OPCODE_CONTINUE:
 	 /* FINISHME: We need to write the loop instruction support still. */
 	 if (intel->gen >= 6)
-	    gen6_CONT(p, loop_stack[loop_stack_depth - 1]);
+	    gen6_CONT(p);
 	 else
-	    brw_CONT(p, if_depth_in_loop[loop_stack_depth]);
+	    brw_CONT(p);
 	 brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 	 break;
 
-      case BRW_OPCODE_WHILE: {
-	 struct brw_instruction *inst0, *inst1;
-	 GLuint br = 1;
-
-	 if (intel->gen >= 5)
-	    br = 2;
-
-	 assert(loop_stack_depth > 0);
-	 loop_stack_depth--;
-	 inst0 = inst1 = brw_WHILE(p, loop_stack[loop_stack_depth]);
-	 if (intel->gen < 6) {
-	    /* patch all the BREAK/CONT instructions from last BGNLOOP */
-	    while (inst0 > loop_stack[loop_stack_depth]) {
-	       inst0--;
-	       if (inst0->header.opcode == BRW_OPCODE_BREAK &&
-		   inst0->bits3.if_else.jump_count == 0) {
-		  inst0->bits3.if_else.jump_count = br * (inst1 - inst0 + 1);
-	    }
-	       else if (inst0->header.opcode == BRW_OPCODE_CONTINUE &&
-			inst0->bits3.if_else.jump_count == 0) {
-		  inst0->bits3.if_else.jump_count = br * (inst1 - inst0);
-	       }
-	    }
-	 }
-      }
+      case BRW_OPCODE_WHILE:
+	 brw_WHILE(p);
 	 break;
 
       case SHADER_OPCODE_RCP:
@@ -797,7 +812,9 @@ fs_visitor::generate_code()
       case SHADER_OPCODE_LOG2:
       case SHADER_OPCODE_SIN:
       case SHADER_OPCODE_COS:
-	 if (intel->gen >= 6) {
+	 if (intel->gen >= 7) {
+	    generate_math1_gen7(inst, dst, src[0]);
+	 } else if (intel->gen == 6) {
 	    generate_math1_gen6(inst, dst, src[0]);
 	 } else {
 	    generate_math_gen4(inst, dst, src[0]);
@@ -806,7 +823,9 @@ fs_visitor::generate_code()
       case SHADER_OPCODE_INT_QUOTIENT:
       case SHADER_OPCODE_INT_REMAINDER:
       case SHADER_OPCODE_POW:
-	 if (intel->gen >= 6) {
+	 if (intel->gen >= 7) {
+	    generate_math2_gen7(inst, dst, src[0], src[1]);
+	 } else if (intel->gen == 6) {
 	    generate_math2_gen6(inst, dst, src[0], src[1]);
 	 } else {
 	    generate_math_gen4(inst, dst, src[0]);
@@ -824,12 +843,12 @@ fs_visitor::generate_code()
       case FS_OPCODE_LINTERP:
 	 generate_linterp(inst, dst, src);
 	 break;
-      case FS_OPCODE_TEX:
+      case SHADER_OPCODE_TEX:
       case FS_OPCODE_TXB:
-      case FS_OPCODE_TXD:
-      case FS_OPCODE_TXF:
-      case FS_OPCODE_TXL:
-      case FS_OPCODE_TXS:
+      case SHADER_OPCODE_TXD:
+      case SHADER_OPCODE_TXF:
+      case SHADER_OPCODE_TXL:
+      case SHADER_OPCODE_TXS:
 	 generate_tex(inst, dst, src[0]);
 	 break;
       case FS_OPCODE_DISCARD:
@@ -886,9 +905,6 @@ fs_visitor::generate_code()
    if (unlikely(INTEL_DEBUG & DEBUG_WM)) {
       printf("\n");
    }
-
-   ralloc_free(loop_stack);
-   ralloc_free(if_depth_in_loop);
 
    brw_set_uip_jip(p);
 

@@ -57,13 +57,13 @@ intel_batchbuffer_init(struct intel_context *intel)
 {
    intel_batchbuffer_reset(intel);
 
-   if (intel->gen == 6) {
+   if (intel->gen >= 6) {
       /* We can't just use brw_state_batch to get a chunk of space for
        * the gen6 workaround because it involves actually writing to
        * the buffer, and the kernel doesn't let us write to the batch.
        */
       intel->batch.workaround_bo = drm_intel_bo_alloc(intel->bufmgr,
-						      "gen6 workaround",
+						      "pipe_control workaround",
 						      4096, 4096);
    }
 }
@@ -85,6 +85,7 @@ intel_batchbuffer_reset(struct intel_context *intel)
    intel->batch.reserved_space = BATCH_RESERVED;
    intel->batch.state_batch_offset = intel->batch.bo->size;
    intel->batch.used = 0;
+   intel->batch.needs_sol_reset = false;
 }
 
 void
@@ -135,16 +136,20 @@ do_flush_locked(struct intel_context *intel)
    }
 
    if (!intel->intelScreen->no_hw) {
-      int ring;
+      int flags;
 
       if (intel->gen < 6 || !batch->is_blit) {
-	 ring = I915_EXEC_RENDER;
+	 flags = I915_EXEC_RENDER;
       } else {
-	 ring = I915_EXEC_BLT;
+	 flags = I915_EXEC_BLT;
       }
 
+      if (batch->needs_sol_reset)
+	 flags |= I915_EXEC_GEN7_SOL_RESET;
+
       if (ret == 0)
-	 ret = drm_intel_bo_mrb_exec(batch->bo, 4*batch->used, NULL, 0, 0, ring);
+	 ret = drm_intel_bo_mrb_exec(batch->bo, 4*batch->used, NULL, 0, 0,
+				     flags);
    }
 
    if (unlikely(INTEL_DEBUG & DEBUG_BATCH)) {
@@ -172,13 +177,6 @@ _intel_batchbuffer_flush(struct intel_context *intel,
 			 const char *file, int line)
 {
    int ret;
-
-   /* No batch should be emitted that uses a mapped region, because that would
-    * cause the map to be incoherent with GPU rendering done by the
-    * batchbuffer. To ensure that condition, we assert a condition that is
-    * stronger but easier to implement: that *no* region is mapped.
-    */
-   assert(intel->num_mapped_regions == 0);
 
    if (intel->batch.used == 0)
       return 0;
@@ -366,6 +364,28 @@ intel_emit_depth_stall_flushes(struct intel_context *intel)
 }
 
 /**
+ * From the BSpec, volume 2a.03: VS Stage Input / State:
+ * "[DevIVB] A PIPE_CONTROL with Post-Sync Operation set to 1h and a depth
+ *  stall needs to be sent just prior to any 3DSTATE_VS, 3DSTATE_URB_VS,
+ *  3DSTATE_CONSTANT_VS, 3DSTATE_BINDING_TABLE_POINTER_VS,
+ *  3DSTATE_SAMPLER_STATE_POINTER_VS command.  Only one PIPE_CONTROL needs
+ *  to be sent before any combination of VS associated 3DSTATE."
+ */
+void
+gen7_emit_vs_workaround_flush(struct intel_context *intel)
+{
+   assert(intel->gen == 7);
+
+   BEGIN_BATCH(4);
+   OUT_BATCH(_3DSTATE_PIPE_CONTROL);
+   OUT_BATCH(PIPE_CONTROL_DEPTH_STALL | PIPE_CONTROL_WRITE_IMMEDIATE);
+   OUT_RELOC(intel->batch.workaround_bo,
+	     I915_GEM_DOMAIN_INSTRUCTION, I915_GEM_DOMAIN_INSTRUCTION, 0);
+   OUT_BATCH(0); /* write data */
+   ADVANCE_BATCH();
+}
+
+/**
  * Emits a PIPE_CONTROL with a non-zero post-sync operation, for
  * implementing two workarounds on gen6.  From section 1.4.7.1
  * "PIPE_CONTROL" of the Sandy Bridge PRM volume 2 part 1:
@@ -460,8 +480,10 @@ intel_batchbuffer_emit_mi_flush(struct intel_context *intel)
 	 OUT_BATCH(PIPE_CONTROL_INSTRUCTION_FLUSH |
 		   PIPE_CONTROL_WRITE_FLUSH |
 		   PIPE_CONTROL_DEPTH_CACHE_FLUSH |
+                   PIPE_CONTROL_VF_CACHE_INVALIDATE |
 		   PIPE_CONTROL_TC_FLUSH |
-		   PIPE_CONTROL_NO_WRITE);
+		   PIPE_CONTROL_NO_WRITE |
+                   PIPE_CONTROL_CS_STALL);
 	 OUT_BATCH(0); /* write address */
 	 OUT_BATCH(0); /* write data */
 	 ADVANCE_BATCH();

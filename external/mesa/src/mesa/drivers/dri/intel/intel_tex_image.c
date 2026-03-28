@@ -84,6 +84,8 @@ intel_miptree_create_for_teximage(struct intel_context *intel,
 	  intelImage->base.Base.Level == firstLevel &&
 	  (intel->gen < 4 || firstLevel == 0)) {
 	 lastLevel = firstLevel;
+      } else if (intelObj->base.Target == GL_TEXTURE_EXTERNAL_OES) {
+	 lastLevel = firstLevel;
       } else {
 	 lastLevel = firstLevel + _mesa_logbase2(MAX2(MAX2(width, height), depth));
       }
@@ -197,147 +199,19 @@ try_pbo_upload(struct gl_context *ctx,
    return true;
 }
 
-/**
- * \param scatter Scatter if true. Gather if false.
- *
- * \see intel_tex_image_x8z24_scatter
- * \see intel_tex_image_x8z24_gather
- */
-static void
-intel_tex_image_s8z24_scattergather(struct intel_context *intel,
-				    struct intel_texture_image *intel_image,
-				    bool scatter)
-{
-   struct gl_context *ctx = &intel->ctx;
-   struct gl_renderbuffer *depth_rb = intel_image->depth_rb;
-   struct gl_renderbuffer *stencil_rb = intel_image->stencil_rb;
-   int w, h, d;
-
-   intel_miptree_get_dimensions_for_image(&intel_image->base.Base, &w, &h, &d);
-   assert(d == 1); /* FINISHME */
-
-   uint32_t depth_row[w];
-   uint8_t stencil_row[w];
-
-   intel_renderbuffer_map(intel, depth_rb);
-   intel_renderbuffer_map(intel, stencil_rb);
-
-   if (scatter) {
-      for (int y = 0; y < h; ++y) {
-	 depth_rb->GetRow(ctx, depth_rb, w, 0, y, depth_row);
-	 for (int x = 0; x < w; ++x) {
-	    stencil_row[x] = depth_row[x] >> 24;
-	 }
-	 stencil_rb->PutRow(ctx, stencil_rb, w, 0, y, stencil_row, NULL);
-      }
-   } else { /* gather */
-      for (int y = 0; y < h; ++y) {
-	 depth_rb->GetRow(ctx, depth_rb, w, 0, y, depth_row);
-	 stencil_rb->GetRow(ctx, stencil_rb, w, 0, y, stencil_row);
-	 for (int x = 0; x < w; ++x) {
-	    uint32_t s8_x24 = stencil_row[x] << 24;
-	    uint32_t x8_z24 = depth_row[x] & 0x00ffffff;
-	    depth_row[x] = s8_x24 | x8_z24;
-	 }
-	 depth_rb->PutRow(ctx, depth_rb, w, 0, y, depth_row, NULL);
-      }
-   }
-
-   intel_renderbuffer_unmap(intel, depth_rb);
-   intel_renderbuffer_unmap(intel, stencil_rb);
-}
-
-/**
- * Copy the x8 bits from intel_image->depth_rb to intel_image->stencil_rb.
- */
-void
-intel_tex_image_s8z24_scatter(struct intel_context *intel,
-			      struct intel_texture_image *intel_image)
-{
-   intel_tex_image_s8z24_scattergather(intel, intel_image, true);
-}
-
-/**
- * Copy the data in intel_image->stencil_rb to the x8 bits in
- * intel_image->depth_rb.
- */
-void
-intel_tex_image_s8z24_gather(struct intel_context *intel,
-			     struct intel_texture_image *intel_image)
-{
-   intel_tex_image_s8z24_scattergather(intel, intel_image, false);
-}
-
-bool
-intel_tex_image_s8z24_create_renderbuffers(struct intel_context *intel,
-					   struct intel_texture_image *image)
-{
-   struct gl_context *ctx = &intel->ctx;
-   bool ok = true;
-   int width, height, depth;
-   struct gl_renderbuffer *drb;
-   struct gl_renderbuffer *srb;
-   struct intel_renderbuffer *idrb;
-   struct intel_renderbuffer *isrb;
-
-   intel_miptree_get_dimensions_for_image(&image->base.Base,
-                                          &width, &height, &depth);
-   assert(depth == 1); /* FINISHME */
-
-   assert(intel->has_separate_stencil);
-   assert(image->base.Base.TexFormat == MESA_FORMAT_S8_Z24);
-   assert(image->mt != NULL);
-
-   drb = intel_create_wrapped_renderbuffer(ctx, width, height,
-					   MESA_FORMAT_X8_Z24);
-   srb = intel_create_wrapped_renderbuffer(ctx, width, height,
-					   MESA_FORMAT_S8);
-
-   if (!drb || !srb) {
-      if (drb) {
-	 drb->Delete(drb);
-      }
-      if (srb) {
-	 srb->Delete(srb);
-      }
-      return false;
-   }
-
-   idrb = intel_renderbuffer(drb);
-   isrb = intel_renderbuffer(srb);
-
-   intel_region_reference(&idrb->region, image->mt->region);
-   ok = intel_alloc_renderbuffer_storage(ctx, srb, GL_STENCIL_INDEX8,
-					 width, height);
-
-   if (!ok) {
-      drb->Delete(drb);
-      srb->Delete(srb);
-      return false;
-   }
-
-   intel_renderbuffer_set_draw_offset(idrb, image, 0);
-   intel_renderbuffer_set_draw_offset(isrb, image, 0);
-
-   _mesa_reference_renderbuffer(&image->depth_rb, drb);
-   _mesa_reference_renderbuffer(&image->stencil_rb, srb);
-
-   return true;
-}
-
 static void
 intelTexImage(struct gl_context * ctx,
               GLint dims,
-              GLenum target, GLint level,
+              struct gl_texture_image *texImage,
               GLint internalFormat,
               GLint width, GLint height, GLint depth,
               GLenum format, GLenum type, const void *pixels,
               const struct gl_pixelstore_attrib *unpack,
-              struct gl_texture_object *texObj,
-              struct gl_texture_image *texImage, GLsizei imageSize)
+              GLsizei imageSize)
 {
    DBG("%s target %s level %d %dx%dx%d\n", __FUNCTION__,
-       _mesa_lookup_enum_by_nr(target), level, width, height, depth);
+       _mesa_lookup_enum_by_nr(texImage->TexObject->Target),
+       texImage->Level, width, height, depth);
 
    /* Attempt to use the blitter for PBO image uploads.
     */
@@ -350,59 +224,52 @@ intelTexImage(struct gl_context * ctx,
    DBG("%s: upload image %dx%dx%d pixels %p\n",
        __FUNCTION__, width, height, depth, pixels);
 
-   _mesa_store_teximage3d(ctx, target, level, internalFormat,
+   _mesa_store_teximage3d(ctx, texImage, internalFormat,
 			  width, height, depth, 0,
-			  format, type, pixels,
-			  unpack, texObj, texImage);
+			  format, type, pixels, unpack);
 }
 
 
 static void
 intelTexImage3D(struct gl_context * ctx,
-                GLenum target, GLint level,
+                struct gl_texture_image *texImage,
                 GLint internalFormat,
                 GLint width, GLint height, GLint depth,
                 GLint border,
                 GLenum format, GLenum type, const void *pixels,
-                const struct gl_pixelstore_attrib *unpack,
-                struct gl_texture_object *texObj,
-                struct gl_texture_image *texImage)
+                const struct gl_pixelstore_attrib *unpack)
 {
-   intelTexImage(ctx, 3, target, level,
+   intelTexImage(ctx, 3, texImage,
                  internalFormat, width, height, depth,
-                 format, type, pixels, unpack, texObj, texImage, 0);
+                 format, type, pixels, unpack, 0);
 }
 
 
 static void
 intelTexImage2D(struct gl_context * ctx,
-                GLenum target, GLint level,
+                struct gl_texture_image *texImage,
                 GLint internalFormat,
                 GLint width, GLint height, GLint border,
                 GLenum format, GLenum type, const void *pixels,
-                const struct gl_pixelstore_attrib *unpack,
-                struct gl_texture_object *texObj,
-                struct gl_texture_image *texImage)
+                const struct gl_pixelstore_attrib *unpack)
 {
-   intelTexImage(ctx, 2, target, level,
+   intelTexImage(ctx, 2, texImage,
                  internalFormat, width, height, 1,
-                 format, type, pixels, unpack, texObj, texImage, 0);
+                 format, type, pixels, unpack, 0);
 }
 
 
 static void
 intelTexImage1D(struct gl_context * ctx,
-                GLenum target, GLint level,
+                struct gl_texture_image *texImage,
                 GLint internalFormat,
                 GLint width, GLint border,
                 GLenum format, GLenum type, const void *pixels,
-                const struct gl_pixelstore_attrib *unpack,
-                struct gl_texture_object *texObj,
-                struct gl_texture_image *texImage)
+                const struct gl_pixelstore_attrib *unpack)
 {
-   intelTexImage(ctx, 1, target, level,
+   intelTexImage(ctx, 1, texImage,
                  internalFormat, width, 1, 1,
-                 format, type, pixels, unpack, texObj, texImage, 0);
+                 format, type, pixels, unpack, 0);
 }
 
 
@@ -424,7 +291,7 @@ intel_set_texture_image_region(struct gl_context *ctx,
    struct gl_texture_object *texobj = image->TexObject;
    struct intel_texture_object *intel_texobj = intel_texture_object(texobj);
 
-   _mesa_init_teximage_fields(&intel->ctx, target, image,
+   _mesa_init_teximage_fields(&intel->ctx, image,
 			      region->width, region->height, 1,
 			      0, internalFormat, format);
 
@@ -471,7 +338,7 @@ intelSetTexBuffer2(__DRIcontext *pDRICtx, GLint target,
    /* If the region isn't set, then intel_update_renderbuffers was unable
     * to get the buffers for the drawable.
     */
-   if (rb->region == NULL)
+   if (!rb || !rb->mt)
       return;
 
    if (texture_format == __DRI_TEXTURE_FORMAT_RGB) {
@@ -485,7 +352,7 @@ intelSetTexBuffer2(__DRIcontext *pDRICtx, GLint target,
 
    _mesa_lock_texture(&intel->ctx, texObj);
    texImage = _mesa_get_tex_image(ctx, texObj, target, level);
-   intel_set_texture_image_region(ctx, texImage, rb->region, target,
+   intel_set_texture_image_region(ctx, texImage, rb->mt->region, target,
 				  internalFormat, texFormat);
    _mesa_unlock_texture(&intel->ctx, texObj);
 }

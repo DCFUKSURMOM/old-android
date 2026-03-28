@@ -259,8 +259,14 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
       return NULL;
    }
 
-   if (double_buffer)
+   if (double_buffer) {
       surface_type &= ~EGL_PIXMAP_BIT;
+
+      if (dri2_dpy->swap_available) {
+         conf->base.MinSwapInterval = 0;
+         conf->base.MaxSwapInterval = 1000; /* XXX arbitrary value */
+      }
+   }
 
    conf->base.SurfaceType |= surface_type;
 
@@ -608,6 +614,8 @@ dri2_terminate(_EGLDriver *drv, _EGLDisplay *disp)
       close(dri2_dpy->fd);
    if (dri2_dpy->driver)
       dlclose(dri2_dpy->driver);
+   if (dri2_dpy->device_name)
+      free(dri2_dpy->device_name);
 
    if (disp->PlatformDisplay == NULL) {
       switch (disp->Platform) {
@@ -616,14 +624,9 @@ dri2_terminate(_EGLDriver *drv, _EGLDisplay *disp)
          xcb_disconnect(dri2_dpy->conn);
          break;
 #endif
-#ifdef HAVE_WAYLAND_PLATFORM
-      case _EGL_PLATFORM_WAYLAND:
-         wl_display_destroy(dri2_dpy->wl_dpy);
-         break;
-#endif
 #ifdef HAVE_DRM_PLATFORM
       case _EGL_PLATFORM_DRM:
-         if (dri2_dpy->own_gbm_device) {
+         if (dri2_dpy->own_device) {
             gbm_device_destroy(&dri2_dpy->gbm_dri->base.base);
          }
          break;
@@ -990,15 +993,51 @@ dri2_create_image_khr_renderbuffer(_EGLDisplay *disp, _EGLContext *ctx,
 }
 
 static _EGLImage *
-dri2_create_image_mesa_drm_buffer(_EGLDisplay *disp, _EGLContext *ctx,
-				  EGLClientBuffer buffer, const EGLint *attr_list)
+dri2_create_image_drm_name(_EGLDisplay *disp, _EGLContext *ctx,
+			   EGLint name,
+                           const _EGLImageAttribs *attrs,
+                           EGLint format,
+                           EGLint pitch)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_image *dri2_img;
-   EGLint format, name, pitch, err;
-   _EGLImageAttribs attrs;
 
    (void) ctx;
+
+   dri2_img = malloc(sizeof *dri2_img);
+   if (!dri2_img) {
+      _eglError(EGL_BAD_ALLOC, "dri2_create_image_mesa_drm");
+      return NULL;
+   }
+
+   if (!_eglInitImage(&dri2_img->base, disp)) {
+      free(dri2_img);
+      return NULL;
+   }
+
+   dri2_img->dri_image =
+      dri2_dpy->image->createImageFromName(dri2_dpy->dri_screen,
+					   attrs->Width,
+					   attrs->Height,
+					   format,
+					   name,
+					   pitch,
+					   dri2_img);
+   if (dri2_img->dri_image == NULL) {
+      free(dri2_img);
+      _eglError(EGL_BAD_ALLOC, "dri2_create_image_mesa_drm");
+      return NULL;
+   }
+
+   return &dri2_img->base;
+}
+
+static _EGLImage *
+dri2_create_image_mesa_drm_buffer(_EGLDisplay *disp, _EGLContext *ctx,
+				  EGLClientBuffer buffer, const EGLint *attr_list)
+{
+   EGLint format, name, pitch, err;
+   _EGLImageAttribs attrs;
 
    name = (EGLint) (uintptr_t) buffer;
 
@@ -1024,76 +1063,52 @@ dri2_create_image_mesa_drm_buffer(_EGLDisplay *disp, _EGLContext *ctx,
       return NULL;
    }
 
-   dri2_img = malloc(sizeof *dri2_img);
-   if (!dri2_img) {
-      _eglError(EGL_BAD_ALLOC, "dri2_create_image_mesa_drm");
-      return NULL;
-   }
-
-   if (!_eglInitImage(&dri2_img->base, disp)) {
-      free(dri2_img);
-      return NULL;
-   }
-
-   dri2_img->dri_image =
-      dri2_dpy->image->createImageFromName(dri2_dpy->dri_screen,
-					   attrs.Width,
-					   attrs.Height,
-					   format,
-					   name,
-					   pitch,
-					   dri2_img);
-   if (dri2_img->dri_image == NULL) {
-      free(dri2_img);
-      _eglError(EGL_BAD_ALLOC, "dri2_create_image_mesa_drm");
-      return NULL;
-   }
-
-   return &dri2_img->base;
+   return dri2_create_image_drm_name (disp, ctx, name, &attrs, format, pitch);
 }
 
 #ifdef HAVE_WAYLAND_PLATFORM
-static _EGLImage *
-dri2_reference_drm_image(_EGLDisplay *disp, _EGLContext *ctx,
-			 __DRIimage *dri_image, EGLint width, EGLint height)
-{
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
-   EGLint attr_list[] = {
-		EGL_WIDTH,		0,
-		EGL_HEIGHT,		0,
-		EGL_DRM_BUFFER_STRIDE_MESA,	0,
-		EGL_DRM_BUFFER_FORMAT_MESA,	EGL_DRM_BUFFER_FORMAT_ARGB32_MESA,
-		EGL_NONE
-   };
-   EGLint name, stride;
-   
-   dri2_dpy->image->queryImage(dri_image, __DRI_IMAGE_ATTRIB_NAME, &name);
-   dri2_dpy->image->queryImage(dri_image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
-
-   attr_list[1] = width;
-   attr_list[3] = height;
-   attr_list[5] = stride / 4;
-
-   return dri2_create_image_mesa_drm_buffer(disp, ctx,
-					    (EGLClientBuffer)(intptr_t) name,
-					    attr_list);
-}
-
 static _EGLImage *
 dri2_create_image_wayland_wl_buffer(_EGLDisplay *disp, _EGLContext *ctx,
 				    EGLClientBuffer _buffer,
 				    const EGLint *attr_list)
 {
    struct wl_buffer *buffer = (struct wl_buffer *) _buffer;
-   (void) attr_list;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   __DRIimage *dri_image;
+   _EGLImageAttribs attrs;
+   EGLint format, name, stride, pitch, err;
 
    if (!wayland_buffer_is_drm(buffer))
        return NULL;
 
-   return dri2_reference_drm_image(disp, ctx,
-                                   wayland_drm_buffer_get_buffer(buffer),
-                                   buffer->width,
-                                   buffer->height);
+   dri_image = wayland_drm_buffer_get_buffer(buffer);
+   
+   dri2_dpy->image->queryImage(dri_image, __DRI_IMAGE_ATTRIB_NAME, &name);
+   dri2_dpy->image->queryImage(dri_image, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
+
+   err = _eglParseImageAttribList(&attrs, disp, attr_list);
+   if (err != EGL_SUCCESS)
+      return NULL;
+
+   attrs.Width = buffer->width;
+   attrs.Height = buffer->height;
+
+   switch (wayland_drm_buffer_get_format(buffer)) {
+   case WL_DRM_FORMAT_ARGB8888:
+      format = __DRI_IMAGE_FORMAT_ARGB8888;
+      break;
+   case WL_DRM_FORMAT_XRGB8888:
+      format = __DRI_IMAGE_FORMAT_XRGB8888;
+      break;
+   default:
+      _eglError(EGL_BAD_PARAMETER,
+		"dri2_create_image_khr: unsupported wl_buffer format");
+      return NULL;
+   }
+
+   pitch = stride / 4;
+
+   return dri2_create_image_drm_name(disp, ctx, name, &attrs, format, pitch);
 }
 #endif
 
@@ -1257,11 +1272,10 @@ dri2_wl_reference_buffer(void *user_data, uint32_t name,
    int dri_format;
 
    switch (format) {
-   case WL_DRM_FORMAT_ARGB32:
-   case WL_DRM_FORMAT_PREMULTIPLIED_ARGB32:
+   case WL_DRM_FORMAT_ARGB8888:
       dri_format =__DRI_IMAGE_FORMAT_ARGB8888;
       break;
-   case WL_DRM_FORMAT_XRGB32:
+   case WL_DRM_FORMAT_XRGB8888:
       dri_format = __DRI_IMAGE_FORMAT_XRGB8888;
       break;
    default:

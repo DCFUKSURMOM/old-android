@@ -35,6 +35,7 @@
 #include "ir_visitor.h"
 #include "ir_print_visitor.h"
 #include "ir_expression_flattening.h"
+#include "ir_uniform.h"
 #include "glsl_types.h"
 #include "glsl_parser_extras.h"
 #include "../glsl/program.h"
@@ -53,7 +54,6 @@ extern "C" {
 #include "program/prog_optimize.h"
 #include "program/prog_print.h"
 #include "program/program.h"
-#include "program/prog_uniform.h"
 #include "program/prog_parameter.h"
 #include "program/sampler.h"
 }
@@ -685,29 +685,6 @@ ir_to_mesa_visitor::visit(ir_variable *ir)
 
       fp->OriginUpperLeft = ir->origin_upper_left;
       fp->PixelCenterInteger = ir->pixel_center_integer;
-
-   } else if (strcmp(ir->name, "gl_FragDepth") == 0) {
-      struct gl_fragment_program *fp = (struct gl_fragment_program *)this->prog;
-      switch (ir->depth_layout) {
-      case ir_depth_layout_none:
-	 fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_NONE;
-	 break;
-      case ir_depth_layout_any:
-	 fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_ANY;
-	 break;
-      case ir_depth_layout_greater:
-	 fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_GREATER;
-	 break;
-      case ir_depth_layout_less:
-	 fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_LESS;
-	 break;
-      case ir_depth_layout_unchanged:
-	 fp->FragDepthLayout = FRAG_DEPTH_LAYOUT_UNCHANGED;
-	 break;
-      default:
-	 assert(0);
-	 break;
-      }
    }
 
    if (ir->mode == ir_var_uniform && strncmp(ir->name, "gl_", 3) == 0) {
@@ -2513,101 +2490,21 @@ print_program(struct prog_instruction *mesa_instructions,
    }
 }
 
-
-/**
- * Count resources used by the given gpu program (number of texture
- * samplers, etc).
- */
-static void
-count_resources(struct gl_program *prog)
-{
-   unsigned int i;
-
-   prog->SamplersUsed = 0;
-
-   for (i = 0; i < prog->NumInstructions; i++) {
-      struct prog_instruction *inst = &prog->Instructions[i];
-
-      if (_mesa_is_tex_instruction(inst->Opcode)) {
-	 prog->SamplerTargets[inst->TexSrcUnit] =
-	    (gl_texture_index)inst->TexSrcTarget;
-	 prog->SamplersUsed |= 1 << inst->TexSrcUnit;
-	 if (inst->TexShadow) {
-	    prog->ShadowSamplers |= 1 << inst->TexSrcUnit;
-	 }
-      }
-   }
-
-   _mesa_update_shader_textures_used(prog);
-}
-
-
-/**
- * Check if the given vertex/fragment/shader program is within the
- * resource limits of the context (number of texture units, etc).
- * If any of those checks fail, record a linker error.
- *
- * XXX more checks are needed...
- */
-static bool
-check_resources(const struct gl_context *ctx,
-                struct gl_shader_program *shader_program,
-                struct gl_program *prog)
-{
-   switch (prog->Target) {
-   case GL_VERTEX_PROGRAM_ARB:
-      if (_mesa_bitcount(prog->SamplersUsed) >
-          ctx->Const.MaxVertexTextureImageUnits) {
-         linker_error(shader_program,
-		      "Too many vertex shader texture samplers");
-      }
-      if (prog->Parameters->NumParameters > MAX_UNIFORMS) {
-         linker_error(shader_program, "Too many vertex shader constants");
-      }
-      break;
-   case MESA_GEOMETRY_PROGRAM:
-      if (_mesa_bitcount(prog->SamplersUsed) >
-          ctx->Const.MaxGeometryTextureImageUnits) {
-         linker_error(shader_program,
-		      "Too many geometry shader texture samplers");
-      }
-      if (prog->Parameters->NumParameters >
-          MAX_GEOMETRY_UNIFORM_COMPONENTS / 4) {
-         linker_error(shader_program, "Too many geometry shader constants");
-      }
-      break;
-   case GL_FRAGMENT_PROGRAM_ARB:
-      if (_mesa_bitcount(prog->SamplersUsed) >
-          ctx->Const.MaxTextureImageUnits) {
-         linker_error(shader_program,
-		      "Too many fragment shader texture samplers");
-      }
-      if (prog->Parameters->NumParameters > MAX_UNIFORMS) {
-         linker_error(shader_program, "Too many fragment shader constants");
-      }
-      break;
-   default:
-      _mesa_problem(ctx, "unexpected program type in check_resources()");
-   }
-
-   return shader_program->LinkStatus;
-}
-
 class add_uniform_to_shader : public uniform_field_visitor {
 public:
    add_uniform_to_shader(struct gl_shader_program *shader_program,
 			 struct gl_program_parameter_list *params)
-      : shader_program(shader_program), params(params), next_sampler(0)
+      : shader_program(shader_program), params(params)
    {
       /* empty */
    }
 
-   int process(ir_variable *var)
+   void process(ir_variable *var)
    {
       this->idx = -1;
       this->uniform_field_visitor::process(var);
 
-      return this->idx;
+      var->location = this->idx;
    }
 
 private:
@@ -2615,7 +2512,6 @@ private:
 
    struct gl_shader_program *shader_program;
    struct gl_program_parameter_list *params;
-   int next_sampler;
    int idx;
 };
 
@@ -2648,8 +2544,20 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name)
        * store in ParameterValues[].
        */
       if (file == PROGRAM_SAMPLER) {
+	 unsigned location;
+	 const bool found =
+	    this->shader_program->UniformHash->get(location,
+						   params->Parameters[index].Name);
+	 assert(found);
+
+	 if (!found)
+	    return;
+
+	 struct gl_uniform_storage *storage =
+	    &this->shader_program->UniformStorage[location];
+
 	 for (unsigned int j = 0; j < size / 4; j++)
-	    params->ParameterValues[index + j][0].f = this->next_sampler++;
+	    params->ParameterValues[index + j][0].f = storage->sampler + j;
       }
    }
 
@@ -2684,16 +2592,77 @@ _mesa_generate_parameters_list_for_uniforms(struct gl_shader_program
 	  || (strncmp(var->name, "gl_", 3) == 0))
 	 continue;
 
-      int loc = add.process(var);
+      add.process(var);
+   }
+}
 
-      /* The location chosen in the Parameters list here (returned from
-       * _mesa_add_parameter) has to match what the linker chose.
-       */
-      if (var->location != loc) {
-	 linker_error(shader_program,
-		      "Allocation of uniform `%s' to target failed "
-		      "(%d vs %d)\n",
-		      var->name, loc, var->location);
+void
+_mesa_associate_uniform_storage(struct gl_context *ctx,
+				struct gl_shader_program *shader_program,
+				struct gl_program_parameter_list *params)
+{
+   /* After adding each uniform to the parameter list, connect the storage for
+    * the parameter with the tracking structure used by the API for the
+    * uniform.
+    */
+   unsigned last_location = unsigned(~0);
+   for (unsigned i = 0; i < params->NumParameters; i++) {
+      if (params->Parameters[i].Type != PROGRAM_UNIFORM)
+	 continue;
+
+      unsigned location;
+      const bool found =
+	 shader_program->UniformHash->get(location, params->Parameters[i].Name);
+      assert(found);
+
+      if (!found)
+	 continue;
+
+      if (location != last_location) {
+	 struct gl_uniform_storage *storage =
+	    &shader_program->UniformStorage[location];
+	 enum gl_uniform_driver_format format = uniform_native;
+
+	 unsigned columns = 0;
+	 switch (storage->type->base_type) {
+	 case GLSL_TYPE_UINT:
+	    assert(ctx->Const.NativeIntegers);
+	    format = uniform_native;
+	    columns = 1;
+	    break;
+	 case GLSL_TYPE_INT:
+	    format =
+	       (ctx->Const.NativeIntegers) ? uniform_native : uniform_int_float;
+	    columns = 1;
+	    break;
+	 case GLSL_TYPE_FLOAT:
+	    format = uniform_native;
+	    columns = storage->type->matrix_columns;
+	    break;
+	 case GLSL_TYPE_BOOL:
+	    if (ctx->Const.NativeIntegers) {
+	       format = (ctx->Const.UniformBooleanTrue == 1)
+		  ? uniform_bool_int_0_1 : uniform_bool_int_0_not0;
+	    } else {
+	       format = uniform_bool_float;
+	    }
+	    columns = 1;
+	    break;
+	 case GLSL_TYPE_SAMPLER:
+	    format = uniform_native;
+	    columns = 1;
+	    break;
+	 default:
+	    assert(!"Should not get here.");
+	    break;
+	 }
+
+	 _mesa_uniform_attach_driver_storage(storage,
+					     4 * sizeof(float) * columns,
+					     4 * sizeof(float),
+					     format,
+					     &params->ParameterValues[i]);
+	 last_location = location;
       }
    }
 }
@@ -2759,12 +2728,12 @@ set_uniform_initializer(struct gl_context *ctx, void *mem_ctx,
 			      element_type->matrix_columns,
 			      element_type->vector_elements,
 			      loc, 1, GL_FALSE, (GLfloat *)values);
-	 loc += element_type->matrix_columns;
       } else {
 	 _mesa_uniform(ctx, shader_program, loc, element_type->matrix_columns,
 		       values, element_type->gl_type);
-	 loc += type_size(element_type);
       }
+
+      loc++;
    }
 }
 
@@ -3200,15 +3169,30 @@ get_mesa_program(struct gl_context *ctx,
    mesa_instructions = NULL;
 
    do_set_program_inouts(shader->ir, prog, shader->Type == GL_FRAGMENT_SHADER);
-   count_resources(prog);
 
-   if (!check_resources(ctx, shader_program, prog))
-      goto fail_exit;
+   prog->SamplersUsed = shader->active_samplers;
+   prog->ShadowSamplers = shader->shadow_samplers;
+   _mesa_update_shader_textures_used(shader_program, prog);
+
+   /* Set the gl_FragDepth layout. */
+   if (target == GL_FRAGMENT_PROGRAM_ARB) {
+      struct gl_fragment_program *fp = (struct gl_fragment_program *)prog;
+      fp->FragDepthLayout = shader_program->FragDepthLayout;
+   }
 
    _mesa_reference_program(ctx, &shader->Program, prog);
 
    if ((ctx->Shader.Flags & GLSL_NO_OPT) == 0) {
       _mesa_optimize_program(ctx, prog);
+   }
+
+   /* This has to be done last.  Any operation that can cause
+    * prog->ParameterValues to get reallocated (e.g., anything that adds a
+    * program constant) has to happen before creating this linkage.
+    */
+   _mesa_associate_uniform_storage(ctx, shader_program, prog->Parameters);
+   if (!shader_program->LinkStatus) {
+      goto fail_exit;
    }
 
    return prog;
@@ -3432,7 +3416,9 @@ _mesa_glsl_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       }
    }
 
-   set_uniform_initializers(ctx, prog);
+   if (prog->LinkStatus) {
+      set_uniform_initializers(ctx, prog);
+   }
 
    if (ctx->Shader.Flags & GLSL_DUMP) {
       if (!prog->LinkStatus) {

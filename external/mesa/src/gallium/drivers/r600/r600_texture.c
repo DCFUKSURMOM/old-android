@@ -65,8 +65,6 @@ static void r600_copy_from_staging_texture(struct pipe_context *ctx, struct r600
 				  transfer->box.x, transfer->box.y, transfer->box.z,
 				  rtransfer->staging_texture,
 				  0, &sbox);
-
-	ctx->texture_barrier(ctx);
 }
 
 unsigned r600_texture_get_offset(struct r600_resource_texture *rtex,
@@ -352,6 +350,9 @@ static void r600_texture_destroy(struct pipe_screen *screen,
 	if (rtex->flushed_depth_texture)
 		pipe_resource_reference((struct pipe_resource **)&rtex->flushed_depth_texture, NULL);
 
+	if (rtex->stencil)
+		pipe_resource_reference((struct pipe_resource **)&rtex->stencil, NULL);
+
 	pb_reference(&resource->buf, NULL);
 	FREE(rtex);
 }
@@ -468,11 +469,13 @@ r600_texture_create_object(struct pipe_screen *screen,
 	} else if (buf) {
 		resource->buf = buf;
 		resource->cs_buf = rscreen->ws->buffer_get_cs_handle(buf);
+		resource->domains = RADEON_DOMAIN_GTT | RADEON_DOMAIN_VRAM;
 	}
 
 	if (rtex->stencil) {
-		rtex->stencil->resource.buf = rtex->resource.buf;
+		pb_reference(&rtex->stencil->resource.buf, rtex->resource.buf);
 		rtex->stencil->resource.cs_buf = rtex->resource.cs_buf;
+		rtex->stencil->resource.domains = rtex->resource.domains;
 	}
 	return rtex;
 }
@@ -626,6 +629,10 @@ struct pipe_transfer* r600_texture_get_transfer(struct pipe_context *ctx,
 	struct r600_transfer *trans;
 	int r;
 	boolean use_staging_texture = FALSE;
+
+	if (usage & PIPE_TRANSFER_MAP_PERMANENTLY) {
+	   return NULL;
+	}
 
 	/* We cannot map a tiled texture directly because the data is
 	 * in a different order, therefore we do detiling using a blit.
@@ -862,6 +869,7 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 	const struct util_format_description *desc;
 	boolean uniform = TRUE;
 	static int r600_enable_s3tc = -1;
+	bool is_srgb_valid = FALSE;
 
 	int i;
 	const uint32_t sign_bit[4] = {
@@ -973,14 +981,17 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 		case PIPE_FORMAT_DXT1_SRGB:
 		case PIPE_FORMAT_DXT1_SRGBA:
 			result = FMT_BC1;
+			is_srgb_valid = TRUE;
 			goto out_word4;
 		case PIPE_FORMAT_DXT3_RGBA:
 		case PIPE_FORMAT_DXT3_SRGBA:
 			result = FMT_BC2;
+			is_srgb_valid = TRUE;
 			goto out_word4;
 		case PIPE_FORMAT_DXT5_RGBA:
 		case PIPE_FORMAT_DXT5_SRGBA:
 			result = FMT_BC3;
+			is_srgb_valid = TRUE;
 			goto out_word4;
 		default:
 			goto out_unknown;
@@ -1011,6 +1022,9 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 
 	/* Non-uniform formats. */
 	if (!uniform) {
+		if (desc->colorspace != UTIL_FORMAT_COLORSPACE_SRGB &&
+		    desc->channel[0].pure_integer)
+			word4 |= S_038010_NUM_FORMAT_ALL(V_038010_SQ_NUM_FORMAT_INT);
 		switch(desc->nr_channels) {
 		case 3:
 			if (desc->channel[0].size == 5 &&
@@ -1085,6 +1099,7 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 				goto out_word4;
 			case 4:
 				result = FMT_8_8_8_8;
+				is_srgb_valid = TRUE;
 				goto out_word4;
 			}
 			goto out_unknown;
@@ -1148,6 +1163,9 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 	}
 
 out_word4:
+
+	if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB && !is_srgb_valid)
+		return ~0;
 	if (word4_p)
 		*word4_p = word4;
 	if (yuv_format_p)

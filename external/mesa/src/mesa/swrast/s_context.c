@@ -105,7 +105,7 @@ _swrast_update_rasterflags( struct gl_context *ctx )
    }
 
 
-   if (ctx->FragmentProgram._Current) {
+   if (_swrast_use_fragment_program(ctx)) {
       rasterMask |= FRAGPROG_BIT;
    }
 
@@ -170,7 +170,7 @@ _swrast_update_fog_hint( struct gl_context *ctx )
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
    swrast->_PreferPixelFog = (!swrast->AllowVertexFog ||
-                              ctx->FragmentProgram._Current ||
+			      _swrast_use_fragment_program(ctx) ||
 			      (ctx->Hint.Fog == GL_NICEST &&
 			       swrast->AllowPixelFog));
 }
@@ -220,13 +220,14 @@ _swrast_update_deferred_texture(struct gl_context *ctx)
       swrast->_DeferredTexture = GL_FALSE;
    }
    else {
+      GLboolean use_fprog = _swrast_use_fragment_program(ctx);
       const struct gl_fragment_program *fprog
          = ctx->FragmentProgram._Current;
-      if (fprog && (fprog->Base.OutputsWritten & (1 << FRAG_RESULT_DEPTH))) {
+      if (use_fprog && (fprog->Base.OutputsWritten & (1 << FRAG_RESULT_DEPTH))) {
          /* Z comes from fragment program/shader */
          swrast->_DeferredTexture = GL_FALSE;
       }
-      else if (fprog && fprog->UsesKill) {
+      else if (use_fprog && fprog->UsesKill) {
          swrast->_DeferredTexture = GL_FALSE;
       }
       else if (ctx->Query.CurrentOcclusionObject) {
@@ -249,10 +250,13 @@ _swrast_update_fog_state( struct gl_context *ctx )
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
    const struct gl_fragment_program *fp = ctx->FragmentProgram._Current;
 
-   assert((fp == NULL) || (fp->Base.Target == GL_FRAGMENT_PROGRAM_ARB));
+   assert((fp == NULL) ||
+          (fp->Base.Target == GL_FRAGMENT_PROGRAM_ARB) ||
+          (fp->Base.Target == GL_FRAGMENT_PROGRAM_NV));
 
    /* determine if fog is needed, and if so, which fog mode */
-   swrast->_FogEnabled = (fp == NULL && ctx->Fog.Enabled);
+   swrast->_FogEnabled = (!_swrast_use_fragment_program(ctx) &&
+			  ctx->Fog.Enabled);
 }
 
 
@@ -263,10 +267,11 @@ _swrast_update_fog_state( struct gl_context *ctx )
 static void
 _swrast_update_fragment_program(struct gl_context *ctx, GLbitfield newState)
 {
-   const struct gl_fragment_program *fp = ctx->FragmentProgram._Current;
-   if (fp) {
-      _mesa_load_state_parameters(ctx, fp->Base.Parameters);
-   }
+   if (!_swrast_use_fragment_program(ctx))
+      return;
+
+   _mesa_load_state_parameters(ctx,
+                               ctx->FragmentProgram._Current->Base.Parameters);
 }
 
 
@@ -284,7 +289,7 @@ _swrast_update_specular_vertex_add(struct gl_context *ctx)
 
    swrast->SpecularVertexAdd = (separateSpecular
                                 && ctx->Texture._EnabledUnits == 0x0
-                                && !ctx->FragmentProgram._Current
+                                && !_swrast_use_fragment_program(ctx)
                                 && !ctx->ATIFragmentShader._Enabled);
 }
 
@@ -490,12 +495,12 @@ static void
 _swrast_update_active_attribs(struct gl_context *ctx)
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
-   GLuint attribsMask;
+   GLbitfield64 attribsMask;
 
    /*
     * Compute _ActiveAttribsMask = which fragment attributes are needed.
     */
-   if (ctx->FragmentProgram._Current) {
+   if (_swrast_use_fragment_program(ctx)) {
       /* fragment program/shader */
       attribsMask = ctx->FragmentProgram._Current->Base.InputsRead;
       attribsMask &= ~FRAG_BIT_WPOS; /* WPOS is always handled specially */
@@ -529,7 +534,7 @@ _swrast_update_active_attribs(struct gl_context *ctx)
    {
       GLuint i, num = 0;
       for (i = 0; i < FRAG_ATTRIB_MAX; i++) {
-         if (attribsMask & (1 << i)) {
+         if (attribsMask & BITFIELD64_BIT(i)) {
             swrast->_ActiveAttribs[num++] = i;
             /* how should this attribute be interpolated? */
             if (i == FRAG_ATTRIB_COL0 || i == FRAG_ATTRIB_COL1)
@@ -595,7 +600,7 @@ _swrast_validate_derived( struct gl_context *ctx )
 
 #define SWRAST_DEBUG 0
 
-/* Public entrypoints:  See also s_accum.c, s_bitmap.c, etc.
+/* Public entrypoints:  See also s_bitmap.c, etc.
  */
 void
 _swrast_Quad( struct gl_context *ctx,
@@ -716,9 +721,9 @@ _swrast_CreateContext( struct gl_context *ctx )
    GLuint i;
    SWcontext *swrast = (SWcontext *)CALLOC(sizeof(SWcontext));
 #ifdef _OPENMP
-   const GLint maxThreads = omp_get_max_threads();
+   const GLuint maxThreads = omp_get_max_threads();
 #else
-   const GLint maxThreads = 1;
+   const GLuint maxThreads = 1;
 #endif
 
    if (SWRAST_DEBUG) {
@@ -749,13 +754,6 @@ _swrast_CreateContext( struct gl_context *ctx )
 
    swrast->Driver.SpanRenderStart = _swrast_span_render_start;
    swrast->Driver.SpanRenderFinish = _swrast_span_render_finish;
-
-   ctx->Driver.MapTexture = _swrast_map_texture;
-   ctx->Driver.UnmapTexture = _swrast_unmap_texture;
-
-   /* Optimized Accum buffer */
-   swrast->_IntegerAccumMode = GL_FALSE;
-   swrast->_IntegerAccumScaler = 0.0;
 
    for (i = 0; i < MAX_TEXTURE_IMAGE_UNITS; i++)
       swrast->TextureSample[i] = NULL;
@@ -874,10 +872,11 @@ void
 _swrast_render_finish( struct gl_context *ctx )
 {
    SWcontext *swrast = SWRAST_CONTEXT(ctx);
-   if (swrast->Driver.SpanRenderFinish)
-      swrast->Driver.SpanRenderFinish( ctx );
 
    _swrast_flush(ctx);
+
+   if (swrast->Driver.SpanRenderFinish)
+      swrast->Driver.SpanRenderFinish( ctx );
 }
 
 

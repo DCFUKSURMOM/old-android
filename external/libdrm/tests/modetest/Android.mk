@@ -11,6 +11,7 @@ LOCAL_C_INCLUDES +=				\
 	$(LOCAL_PATH)/../../include/drm
 
 LOCAL_MODULE := modetest
+LOCAL_MODULE_TAGS := debug
 
 LOCAL_SHARED_LIBRARIES :=			\
 	libdrm					\

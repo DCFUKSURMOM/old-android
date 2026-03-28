@@ -493,21 +493,13 @@ static void r300_set_clip_state(struct pipe_context* pipe,
             (struct r300_clip_state*)r300->clip_state.state;
     CB_LOCALS;
 
-    clip->clip = *state;
-
     if (r300->screen->caps.has_tcl) {
-        r300->clip_state.size = 2 + !!state->nr * 3 + state->nr * 4;
-
         BEGIN_CB(clip->cb, r300->clip_state.size);
-        if (state->nr) {
-           OUT_CB_REG(R300_VAP_PVS_VECTOR_INDX_REG,
+        OUT_CB_REG(R300_VAP_PVS_VECTOR_INDX_REG,
                    (r300->screen->caps.is_r500 ?
                     R500_PVS_UCP_START : R300_PVS_UCP_START));
-           OUT_CB_ONE_REG(R300_VAP_PVS_UPLOAD_DATA, state->nr * 4);
-           OUT_CB_TABLE(state->ucp, state->nr * 4);
-        }
-        OUT_CB_REG(R300_VAP_CLIP_CNTL, ((1 << state->nr) - 1) |
-                   R300_PS_UCP_MODE_CLIP_AS_TRIFAN);
+        OUT_CB_ONE_REG(R300_VAP_PVS_UPLOAD_DATA, 6 * 4);
+        OUT_CB_TABLE(state->ucp, 6 * 4);
         END_CB;
 
         r300_mark_atom_dirty(r300, &r300->clip_state);
@@ -756,7 +748,7 @@ static void r300_print_fb_surf_info(struct pipe_surface *surf, unsigned index,
             "r300:   %s[%i] Dim: %ix%i, Firstlayer: %i, "
             "Lastlayer: %i, Level: %i, Format: %s\n"
 
-            "r300:     TEX: Macro: %s, Micro: %s, Pitch: %i, "
+            "r300:     TEX: Macro: %s, Micro: %s, "
             "Dim: %ix%ix%i, LastLevel: %i, Format: %s\n",
 
             binding, index, surf->width, surf->height,
@@ -765,9 +757,8 @@ static void r300_print_fb_surf_info(struct pipe_surface *surf, unsigned index,
 
             rtex->tex.macrotile[0] ? "YES" : " NO",
             rtex->tex.microtile ? "YES" : " NO",
-            rtex->tex.stride_in_pixels[0],
             tex->width0, tex->height0, tex->depth0,
-            tex->last_level, util_format_short_name(tex->format));
+            tex->last_level, util_format_short_name(surf->format));
 }
 
 void r300_mark_fb_state_dirty(struct r300_context *r300,
@@ -872,8 +863,12 @@ r300_set_framebuffer_state(struct pipe_context* pipe,
         r300_mark_atom_dirty(r300, &r300->dsa_state);
     }
 
-    /* The tiling flags are dependent on the surface miplevel, unfortunately. */
-    r300_fb_set_tiling_flags(r300, state);
+    if (r300->screen->info.drm_minor < 12) {
+       /* The tiling flags are dependent on the surface miplevel, unfortunately.
+        * This workarounds a bad design decision in old kernels which were
+        * rewriting tile fields in registers. */
+        r300_fb_set_tiling_flags(r300, state);
+    }
 
     util_copy_framebuffer_state(r300->fb_state.state, state);
 
@@ -884,7 +879,7 @@ r300_set_framebuffer_state(struct pipe_context* pipe,
     r300_mark_fb_state_dirty(r300, R300_CHANGED_FB_STATE);
 
     if (state->zsbuf) {
-        switch (util_format_get_blocksize(state->zsbuf->texture->format)) {
+        switch (util_format_get_blocksize(state->zsbuf->format)) {
         case 2:
             zbuffer_bpp = 16;
             break;
@@ -1024,6 +1019,7 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
     struct r300_rs_state* rs = CALLOC_STRUCT(r300_rs_state);
     float psiz;
     uint32_t vap_control_status;    /* R300_VAP_CNTL_STATUS: 0x2140 */
+    uint32_t vap_clip_cntl;         /* R300_VAP_CLIP_CNTL: 0x221C */
     uint32_t point_size;            /* R300_GA_POINT_SIZE: 0x421c */
     uint32_t point_minmax;          /* R300_GA_POINT_MINMAX: 0x4230 */
     uint32_t line_control;          /* R300_GA_LINE_CNTL: 0x4234 */
@@ -1052,6 +1048,10 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
 
     /* Override some states for Draw. */
     rs->rs_draw.sprite_coord_enable = 0; /* We can do this in HW. */
+    rs->rs_draw.offset_point = 0;
+    rs->rs_draw.offset_line = 0;
+    rs->rs_draw.offset_tri = 0;
+    rs->rs_draw.offset_clamp = 0;
 
 #ifdef PIPE_ARCH_LITTLE_ENDIAN
     vap_control_status = R300_VC_NO_SWAP;
@@ -1074,7 +1074,7 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
         /* Per-vertex point size.
          * Clamp to [0, max FB size] */
         psiz = pipe->screen->get_paramf(pipe->screen,
-                                        PIPE_CAP_MAX_POINT_WIDTH);
+                                        PIPE_CAPF_MAX_POINT_WIDTH);
         point_minmax =
             pack_float_16_6x(psiz) << R300_GA_POINT_MINMAX_MAX_SHIFT;
     } else {
@@ -1163,6 +1163,13 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
         }
     }
 
+    if (r300_screen(pipe->screen)->caps.has_tcl) {
+       vap_clip_cntl = (state->clip_plane_enable & 63) |
+                       R300_PS_UCP_MODE_CLIP_AS_TRIFAN;
+    } else {
+       vap_clip_cntl = R300_CLIP_DISABLE;
+    }
+
     /* Vertex color clamping. FP20 means no clamping. */
     round_mode =
       R300_GA_ROUND_MODE_GEOMETRY_ROUND_NEAREST |
@@ -1172,13 +1179,14 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
     /* Build the main command buffer. */
     BEGIN_CB(rs->cb_main, RS_STATE_MAIN_SIZE);
     OUT_CB_REG(R300_VAP_CNTL_STATUS, vap_control_status);
+    OUT_CB_REG(R300_VAP_CLIP_CNTL, vap_clip_cntl);
     OUT_CB_REG(R300_GA_POINT_SIZE, point_size);
     OUT_CB_REG_SEQ(R300_GA_POINT_MINMAX, 2);
     OUT_CB(point_minmax);
     OUT_CB(line_control);
     OUT_CB_REG_SEQ(R300_SU_POLY_OFFSET_ENABLE, 2);
     OUT_CB(polygon_offset_enable);
-    rs->cull_mode_index = 9;
+    rs->cull_mode_index = 11;
     OUT_CB(cull_mode);
     OUT_CB_REG(R300_GA_LINE_STIPPLE_CONFIG, line_stipple_config);
     OUT_CB_REG(R300_GA_LINE_STIPPLE_VALUE, line_stipple_value);
@@ -1454,10 +1462,12 @@ static void r300_set_fragment_sampler_views(struct pipe_context* pipe,
     }
 }
 
-static struct pipe_sampler_view *
-r300_create_sampler_view(struct pipe_context *pipe,
+struct pipe_sampler_view *
+r300_create_sampler_view_custom(struct pipe_context *pipe,
                          struct pipe_resource *texture,
-                         const struct pipe_sampler_view *templ)
+                         const struct pipe_sampler_view *templ,
+                         unsigned width0_override,
+                         unsigned height0_override)
 {
     struct r300_sampler_view *view = CALLOC_STRUCT(r300_sampler_view);
     struct r300_resource *tex = r300_resource(texture);
@@ -1473,6 +1483,8 @@ r300_create_sampler_view(struct pipe_context *pipe,
         view->base.texture = NULL;
         pipe_resource_reference(&view->base.texture, texture);
 
+	view->width0_override = width0_override;
+	view->height0_override = height0_override;
         view->swizzle[0] = templ->swizzle_r;
         view->swizzle[1] = templ->swizzle_g;
         view->swizzle[2] = templ->swizzle_b;
@@ -1489,7 +1501,10 @@ r300_create_sampler_view(struct pipe_context *pipe,
         }
         assert(hwformat != ~0);
 
-        view->format = tex->tx_format;
+	r300_texture_setup_format_state(r300_screen(pipe->screen), tex,
+					templ->format, 0,
+	                                width0_override, height0_override,
+					&view->format);
         view->format.format1 |= hwformat;
         if (is_r500) {
             view->format.format2 |= r500_tx_format_msb_bit(templ->format);
@@ -1498,6 +1513,17 @@ r300_create_sampler_view(struct pipe_context *pipe,
 
     return (struct pipe_sampler_view*)view;
 }
+
+static struct pipe_sampler_view *
+r300_create_sampler_view(struct pipe_context *pipe,
+                         struct pipe_resource *texture,
+                         const struct pipe_sampler_view *templ)
+{
+    return r300_create_sampler_view_custom(pipe, texture, templ,
+                                           r300_resource(texture)->tex.width0,
+                                           r300_resource(texture)->tex.height0);
+}
+
 
 static void
 r300_sampler_view_destroy(struct pipe_context *pipe,
@@ -1573,7 +1599,6 @@ static void r300_set_vertex_buffers(struct pipe_context* pipe,
                                     const struct pipe_vertex_buffer* buffers)
 {
     struct r300_context* r300 = r300_context(pipe);
-    unsigned i;
     struct pipe_vertex_buffer dummy_vb = {0};
 
     /* There must be at least one vertex buffer set, otherwise it locks up. */
@@ -1583,18 +1608,13 @@ static void r300_set_vertex_buffers(struct pipe_context* pipe,
         count = 1;
     }
 
-    u_vbuf_set_vertex_buffers(r300->vbuf_mgr, count, buffers);
-
     if (r300->screen->caps.has_tcl) {
-        /* HW TCL. */
-        for (i = 0; i < count; i++) {
-            if (buffers[i].buffer &&
-		!r300_resource(buffers[i].buffer)->b.user_ptr) {
-            }
-        }
+        u_vbuf_set_vertex_buffers(r300->vbuf_mgr, count, buffers);
         r300->vertex_arrays_dirty = TRUE;
     } else {
-        /* SW TCL. */
+        util_copy_vertex_buffers(r300->swtcl_vertex_buffer,
+                                 &r300->swtcl_nr_vertex_buffers,
+                                 buffers, count);
         draw_set_vertex_buffers(r300->draw, count, buffers);
     }
 }
@@ -1604,19 +1624,15 @@ static void r300_set_index_buffer(struct pipe_context* pipe,
 {
     struct r300_context* r300 = r300_context(pipe);
 
-    if (ib && ib->buffer) {
-        assert(ib->offset % ib->index_size == 0);
-
-        pipe_resource_reference(&r300->index_buffer.buffer, ib->buffer);
-        memcpy(&r300->index_buffer, ib, sizeof(r300->index_buffer));
-        r300->index_buffer.offset /= r300->index_buffer.index_size;
-    }
-    else {
-        pipe_resource_reference(&r300->index_buffer.buffer, NULL);
-        memset(&r300->index_buffer, 0, sizeof(r300->index_buffer));
-    }
-
-    if (!r300->screen->caps.has_tcl) {
+    if (r300->screen->caps.has_tcl) {
+        u_vbuf_set_index_buffer(r300->vbuf_mgr, ib);
+    } else {
+        if (ib) {
+            pipe_resource_reference(&r300->swtcl_index_buffer.buffer, ib->buffer);
+            memcpy(&r300->swtcl_index_buffer, ib, sizeof(*ib));
+        } else {
+            pipe_resource_reference(&r300->swtcl_index_buffer.buffer, NULL);
+        }
         draw_set_index_buffer(r300->draw, ib);
     }
 }
@@ -1690,11 +1706,11 @@ static void* r300_create_vertex_elements_state(struct pipe_context* pipe,
         return NULL;
 
     velems->count = count;
-    velems->vmgr_elements =
-        u_vbuf_create_vertex_elements(r300->vbuf_mgr, count, attribs,
-                                          velems->velem);
 
     if (r300_screen(pipe->screen)->caps.has_tcl) {
+        velems->vmgr_elements =
+            u_vbuf_create_vertex_elements(r300->vbuf_mgr, count, attribs,
+                                          velems->velem);
         /* Setup PSC.
          * The unused components will be replaced by (..., 0, 1). */
         r300_vertex_psc(velems);
@@ -1704,6 +1720,8 @@ static void* r300_create_vertex_elements_state(struct pipe_context* pipe,
                 align(util_format_get_blocksize(velems->velem[i].src_format), 4);
             velems->vertex_size_dwords += velems->format_size[i] / 4;
         }
+    } else {
+        memcpy(velems->velem, attribs, count * sizeof(struct pipe_vertex_element));
     }
 
     return velems;
@@ -1721,9 +1739,9 @@ static void r300_bind_vertex_elements_state(struct pipe_context *pipe,
 
     r300->velems = velems;
 
-    u_vbuf_bind_vertex_elements(r300->vbuf_mgr, state, velems->vmgr_elements);
-
-    if (r300->draw) {
+    if (r300->screen->caps.has_tcl) {
+        u_vbuf_bind_vertex_elements(r300->vbuf_mgr, state, velems->vmgr_elements);
+    } else {
         draw_set_vertex_elements(r300->draw, velems->count, velems->velem);
         return;
     }
@@ -1738,7 +1756,9 @@ static void r300_delete_vertex_elements_state(struct pipe_context *pipe, void *s
     struct r300_context *r300 = r300_context(pipe);
     struct r300_vertex_element_state *velems = state;
 
-    u_vbuf_destroy_vertex_elements(r300->vbuf_mgr, velems->vmgr_elements);
+    if (r300->screen->caps.has_tcl) {
+        u_vbuf_destroy_vertex_elements(r300->vbuf_mgr, velems->vmgr_elements);
+    }
     FREE(state);
 }
 
@@ -1753,10 +1773,10 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
     vs->state.tokens = tgsi_dup_tokens(shader->tokens);
 
     if (r300->screen->caps.has_tcl) {
-        r300_init_vs_outputs(vs);
+        r300_init_vs_outputs(r300, vs);
         r300_translate_vertex_shader(r300, vs);
     } else {
-        r300_draw_init_vertex_shader(r300->draw, vs);
+        r300_draw_init_vertex_shader(r300, vs);
     }
 
     return vs;

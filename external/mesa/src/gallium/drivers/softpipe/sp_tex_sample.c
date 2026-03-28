@@ -2113,15 +2113,23 @@ sample_compare(struct tgsi_sampler *tgsi_sampler,
 
    /**
     * Compare texcoord 'p' (aka R) against texture value 'rgba[0]'
+    * for 2D Array texture we need to use the 'c0' (aka Q).
     * When we sampled the depth texture, the depth value was put into all
     * RGBA channels.  We look at the red channel here.
     */
 
-   pc0 = CLAMP(p[0], 0.0F, 1.0F);
-   pc1 = CLAMP(p[1], 0.0F, 1.0F);
-   pc2 = CLAMP(p[2], 0.0F, 1.0F);
-   pc3 = CLAMP(p[3], 0.0F, 1.0F);
-
+   if (samp->view->texture->target == PIPE_TEXTURE_2D_ARRAY ||
+       samp->view->texture->target == PIPE_TEXTURE_CUBE) {
+      pc0 = CLAMP(c0[0], 0.0F, 1.0F);
+      pc1 = CLAMP(c0[1], 0.0F, 1.0F);
+      pc2 = CLAMP(c0[2], 0.0F, 1.0F);
+      pc3 = CLAMP(c0[3], 0.0F, 1.0F);
+   } else {
+      pc0 = CLAMP(p[0], 0.0F, 1.0F);
+      pc1 = CLAMP(p[1], 0.0F, 1.0F);
+      pc2 = CLAMP(p[2], 0.0F, 1.0F);
+      pc3 = CLAMP(p[3], 0.0F, 1.0F);
+   }
    /* compare four texcoords vs. four texture samples */
    switch (sampler->compare_func) {
    case PIPE_FUNC_LESS:
@@ -2172,13 +2180,22 @@ sample_compare(struct tgsi_sampler *tgsi_sampler,
       break;
    }
 
-   /* convert four pass/fail values to an intensity in [0,1] */
-   val = 0.25F * (k0 + k1 + k2 + k3);
+   if (sampler->mag_img_filter == PIPE_TEX_FILTER_LINEAR) {
+      /* convert four pass/fail values to an intensity in [0,1] */
+      val = 0.25F * (k0 + k1 + k2 + k3);
 
-   /* XXX returning result for default GL_DEPTH_TEXTURE_MODE = GL_LUMINANCE */
-   for (j = 0; j < 4; j++) {
-      rgba[0][j] = rgba[1][j] = rgba[2][j] = val;
-      rgba[3][j] = 1.0F;
+      /* XXX returning result for default GL_DEPTH_TEXTURE_MODE = GL_LUMINANCE */
+      for (j = 0; j < 4; j++) {
+	 rgba[0][j] = rgba[1][j] = rgba[2][j] = val;
+	 rgba[3][j] = 1.0F;
+      }
+   } else {
+      for (j = 0; j < 4; j++) {
+	 rgba[0][j] = k0;
+	 rgba[1][j] = k1;
+	 rgba[2][j] = k2;
+	 rgba[3][j] = 1.0F;
+      }
    }
 }
 
@@ -2270,6 +2287,76 @@ sample_cube(struct tgsi_sampler *tgsi_sampler,
    samp->compare(tgsi_sampler, ssss, tttt, NULL, c0, control, rgba);
 }
 
+static void do_swizzling(const struct sp_sampler_variant *samp,
+                         float in[NUM_CHANNELS][QUAD_SIZE],
+                         float out[NUM_CHANNELS][QUAD_SIZE])
+{
+   int j;
+   const unsigned swizzle_r = samp->key.bits.swizzle_r;
+   const unsigned swizzle_g = samp->key.bits.swizzle_g;
+   const unsigned swizzle_b = samp->key.bits.swizzle_b;
+   const unsigned swizzle_a = samp->key.bits.swizzle_a;
+
+   switch (swizzle_r) {
+   case PIPE_SWIZZLE_ZERO:
+      for (j = 0; j < 4; j++)
+         out[0][j] = 0.0f;
+      break;
+   case PIPE_SWIZZLE_ONE:
+      for (j = 0; j < 4; j++)
+         out[0][j] = 1.0f;
+      break;
+   default:
+      assert(swizzle_r < 4);
+      for (j = 0; j < 4; j++)
+         out[0][j] = in[swizzle_r][j];
+   }
+
+   switch (swizzle_g) {
+   case PIPE_SWIZZLE_ZERO:
+      for (j = 0; j < 4; j++)
+         out[1][j] = 0.0f;
+      break;
+   case PIPE_SWIZZLE_ONE:
+      for (j = 0; j < 4; j++)
+         out[1][j] = 1.0f;
+      break;
+   default:
+      assert(swizzle_g < 4);
+      for (j = 0; j < 4; j++)
+         out[1][j] = in[swizzle_g][j];
+   }
+
+   switch (swizzle_b) {
+   case PIPE_SWIZZLE_ZERO:
+      for (j = 0; j < 4; j++)
+         out[2][j] = 0.0f;
+      break;
+   case PIPE_SWIZZLE_ONE:
+      for (j = 0; j < 4; j++)
+         out[2][j] = 1.0f;
+      break;
+   default:
+      assert(swizzle_b < 4);
+      for (j = 0; j < 4; j++)
+         out[2][j] = in[swizzle_b][j];
+   }
+
+   switch (swizzle_a) {
+   case PIPE_SWIZZLE_ZERO:
+      for (j = 0; j < 4; j++)
+         out[3][j] = 0.0f;
+      break;
+   case PIPE_SWIZZLE_ONE:
+      for (j = 0; j < 4; j++)
+         out[3][j] = 1.0f;
+      break;
+   default:
+      assert(swizzle_a < 4);
+      for (j = 0; j < 4; j++)
+         out[3][j] = in[swizzle_a][j];
+   }
+}
 
 static void
 sample_swizzle(struct tgsi_sampler *tgsi_sampler,
@@ -2282,73 +2369,10 @@ sample_swizzle(struct tgsi_sampler *tgsi_sampler,
 {
    struct sp_sampler_variant *samp = sp_sampler_variant(tgsi_sampler);
    float rgba_temp[NUM_CHANNELS][QUAD_SIZE];
-   const unsigned swizzle_r = samp->key.bits.swizzle_r;
-   const unsigned swizzle_g = samp->key.bits.swizzle_g;
-   const unsigned swizzle_b = samp->key.bits.swizzle_b;
-   const unsigned swizzle_a = samp->key.bits.swizzle_a;
-   unsigned j;
 
    samp->sample_target(tgsi_sampler, s, t, p, c0, control, rgba_temp);
 
-   switch (swizzle_r) {
-   case PIPE_SWIZZLE_ZERO:
-      for (j = 0; j < 4; j++)
-         rgba[0][j] = 0.0f;
-      break;
-   case PIPE_SWIZZLE_ONE:
-      for (j = 0; j < 4; j++)
-         rgba[0][j] = 1.0f;
-      break;
-   default:
-      assert(swizzle_r < 4);
-      for (j = 0; j < 4; j++)
-         rgba[0][j] = rgba_temp[swizzle_r][j];
-   }
-
-   switch (swizzle_g) {
-   case PIPE_SWIZZLE_ZERO:
-      for (j = 0; j < 4; j++)
-         rgba[1][j] = 0.0f;
-      break;
-   case PIPE_SWIZZLE_ONE:
-      for (j = 0; j < 4; j++)
-         rgba[1][j] = 1.0f;
-      break;
-   default:
-      assert(swizzle_g < 4);
-      for (j = 0; j < 4; j++)
-         rgba[1][j] = rgba_temp[swizzle_g][j];
-   }
-
-   switch (swizzle_b) {
-   case PIPE_SWIZZLE_ZERO:
-      for (j = 0; j < 4; j++)
-         rgba[2][j] = 0.0f;
-      break;
-   case PIPE_SWIZZLE_ONE:
-      for (j = 0; j < 4; j++)
-         rgba[2][j] = 1.0f;
-      break;
-   default:
-      assert(swizzle_b < 4);
-      for (j = 0; j < 4; j++)
-         rgba[2][j] = rgba_temp[swizzle_b][j];
-   }
-
-   switch (swizzle_a) {
-   case PIPE_SWIZZLE_ZERO:
-      for (j = 0; j < 4; j++)
-         rgba[3][j] = 0.0f;
-      break;
-   case PIPE_SWIZZLE_ONE:
-      for (j = 0; j < 4; j++)
-         rgba[3][j] = 1.0f;
-      break;
-   default:
-      assert(swizzle_a < 4);
-      for (j = 0; j < 4; j++)
-         rgba[3][j] = rgba_temp[swizzle_a][j];
-   }
+   do_swizzling(samp, rgba_temp, rgba);
 }
 
 
@@ -2622,6 +2646,10 @@ sample_get_texels(struct tgsi_sampler *tgsi_sampler,
    const struct pipe_resource *texture = samp->view->texture;
    int j, c;
    const float *tx;
+   bool need_swizzle = (samp->key.bits.swizzle_r != PIPE_SWIZZLE_RED ||
+                        samp->key.bits.swizzle_g != PIPE_SWIZZLE_GREEN ||
+                        samp->key.bits.swizzle_b != PIPE_SWIZZLE_BLUE ||
+                        samp->key.bits.swizzle_a != PIPE_SWIZZLE_ALPHA);
 
    addr.value = 0;
    /* TODO write a better test for LOD */
@@ -2679,6 +2707,12 @@ sample_get_texels(struct tgsi_sampler *tgsi_sampler,
    default:
       assert(!"Unknown or CUBE texture type in TXF processing\n");
       break;
+   }
+
+   if (need_swizzle) {
+      float rgba_temp[NUM_CHANNELS][QUAD_SIZE];
+      memcpy(rgba_temp, rgba, sizeof(rgba_temp));
+      do_swizzling(samp, rgba_temp, rgba);
    }
 }
 /**

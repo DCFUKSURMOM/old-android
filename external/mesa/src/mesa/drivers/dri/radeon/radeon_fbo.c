@@ -70,6 +70,163 @@ radeon_delete_renderbuffer(struct gl_renderbuffer *rb)
   free(rrb);
 }
 
+#if defined(RADEON_R100)
+static GLuint get_depth_z32(const struct radeon_renderbuffer * rrb,
+			       GLint x, GLint y)
+{
+    GLuint ba, address = 0;
+
+    ba = (y >> 4) * (rrb->pitch >> 6) + (x >> 4);
+
+    address |= (x & 0x7) << 2;
+    address |= (y & 0x3) << 5;
+    address |= (((x & 0x10) >> 2) ^ (y & 0x4)) << 5;
+    address |= (ba & 3) << 8;
+    address |= (y & 0x8) << 7;
+    address |= (((x & 0x8) << 1) ^ (y & 0x10)) << 7;
+    address |= (ba & ~0x3) << 10;
+    return address;
+}
+
+static GLuint get_depth_z16(const struct radeon_renderbuffer * rrb,
+			       GLint x, GLint y)
+{
+    GLuint ba, address = 0;                   /* a[0]    = 0           */
+
+    ba = (y / 16) * (rrb->pitch >> 6) + (x / 32);
+
+    address |= (x & 0x7) << 1;                /* a[1..3] = x[0..2]     */
+    address |= (y & 0x7) << 4;                /* a[4..6] = y[0..2]     */
+    address |= (x & 0x8) << 4;                /* a[7]    = x[3]        */
+    address |= (ba & 0x3) << 8;               /* a[8..9] = ba[0..1]    */
+    address |= (y & 0x8) << 7;                /* a[10]   = y[3]        */
+    address |= ((x & 0x10) ^ (y & 0x10)) << 7;/* a[11]   = x[4] ^ y[4] */
+    address |= (ba & ~0x3) << 10;             /* a[12..] = ba[2..] */
+    return address;
+}
+#endif
+
+#if defined(RADEON_R200)
+static GLuint get_depth_z32(const struct radeon_renderbuffer * rrb,
+				 GLint x, GLint y)
+{
+    GLuint offset;
+    GLuint b;
+    offset = 0;
+    b = (((y & 0x7ff) >> 4) * (rrb->pitch >> 7) + (x >> 5));
+    offset += (b >> 1) << 12;
+    offset += (((rrb->pitch >> 7) & 0x1) ? (b & 0x1) : ((b & 0x1) ^ ((y >> 4) & 0x1))) << 11;
+    offset += ((y >> 2) & 0x3) << 9;
+    offset += ((x >> 2) & 0x1) << 8;
+    offset += ((x >> 3) & 0x3) << 6;
+    offset += ((y >> 1) & 0x1) << 5;
+    offset += ((x >> 1) & 0x1) << 4;
+    offset += (y & 0x1) << 3;
+    offset += (x & 0x1) << 2;
+
+    return offset;
+}
+
+static GLuint get_depth_z16(const struct radeon_renderbuffer *rrb,
+			       GLint x, GLint y)
+{
+   GLuint offset;
+   GLuint b;
+
+   offset = 0;
+   b = (((y  >> 4) * (rrb->pitch >> 7) + (x >> 6)));
+   offset += (b >> 1) << 12;
+   offset += (((rrb->pitch >> 7) & 0x1) ? (b & 0x1) : ((b & 0x1) ^ ((y >> 4) & 0x1))) << 11;
+   offset += ((y >> 2) & 0x3) << 9;
+   offset += ((x >> 3) & 0x1) << 8;
+   offset += ((x >> 4) & 0x3) << 6;
+   offset += ((x >> 2) & 0x1) << 5;
+   offset += ((y >> 1) & 0x1) << 4;
+   offset += ((x >> 1) & 0x1) << 3;
+   offset += (y & 0x1) << 2;
+   offset += (x & 0x1) << 1;
+
+   return offset;
+}
+#endif
+
+static void
+radeon_map_renderbuffer_s8z24(struct gl_context *ctx,
+		       struct gl_renderbuffer *rb,
+		       GLuint x, GLuint y, GLuint w, GLuint h,
+		       GLbitfield mode,
+		       GLubyte **out_map,
+		       GLint *out_stride)
+{
+    struct radeon_renderbuffer *rrb = radeon_renderbuffer(rb);
+    uint32_t *untiled_s8z24_map, *tiled_s8z24_map;
+    int ret;
+    int y_flip = (rb->Name == 0) ? -1 : 1;
+    int y_bias = (rb->Name == 0) ? (rb->Height - 1) : 0;
+    uint32_t pitch = w * rrb->cpp;
+
+    rrb->map_pitch = pitch;
+
+    rrb->map_buffer = malloc(w * h * 4);
+    ret = radeon_bo_map(rrb->bo, !!(mode & GL_MAP_WRITE_BIT));
+    assert(!ret);
+    untiled_s8z24_map = rrb->map_buffer;
+    tiled_s8z24_map = rrb->bo->ptr;
+
+    for (uint32_t pix_y = 0; pix_y < h; ++ pix_y) {
+	for (uint32_t pix_x = 0; pix_x < w; ++pix_x) {
+	    uint32_t flipped_y = y_flip * (int32_t)(y + pix_y) + y_bias;
+	    uint32_t src_offset = get_depth_z32(rrb, x + pix_x, flipped_y);
+	    uint32_t dst_offset = pix_y * rrb->map_pitch + pix_x * rrb->cpp;
+	    untiled_s8z24_map[dst_offset/4] = tiled_s8z24_map[src_offset/4];
+	}
+    }
+
+    radeon_bo_unmap(rrb->bo);
+		   
+    *out_map = rrb->map_buffer;
+    *out_stride = rrb->map_pitch;
+}
+
+static void
+radeon_map_renderbuffer_z16(struct gl_context *ctx,
+			    struct gl_renderbuffer *rb,
+			    GLuint x, GLuint y, GLuint w, GLuint h,
+			    GLbitfield mode,
+			    GLubyte **out_map,
+			    GLint *out_stride)
+{
+    struct radeon_renderbuffer *rrb = radeon_renderbuffer(rb);
+    uint16_t *untiled_z16_map, *tiled_z16_map;
+    int ret;
+    int y_flip = (rb->Name == 0) ? -1 : 1;
+    int y_bias = (rb->Name == 0) ? (rb->Height - 1) : 0;
+    uint32_t pitch = w * rrb->cpp;
+
+    rrb->map_pitch = pitch;
+
+    rrb->map_buffer = malloc(w * h * 2);
+    ret = radeon_bo_map(rrb->bo, !!(mode & GL_MAP_WRITE_BIT));
+    assert(!ret);
+
+    untiled_z16_map = rrb->map_buffer;
+    tiled_z16_map = rrb->bo->ptr;
+
+    for (uint32_t pix_y = 0; pix_y < h; ++ pix_y) {
+	for (uint32_t pix_x = 0; pix_x < w; ++pix_x) {
+	    uint32_t flipped_y = y_flip * (int32_t)(y + pix_y) + y_bias;
+	    uint32_t src_offset = get_depth_z16(rrb, x + pix_x, flipped_y);
+	    uint32_t dst_offset = pix_y * rrb->map_pitch + pix_x * rrb->cpp;
+	    untiled_z16_map[dst_offset/2] = tiled_z16_map[src_offset/2];
+	}
+    }
+
+    radeon_bo_unmap(rrb->bo);
+
+    *out_map = rrb->map_buffer;
+    *out_stride = rrb->map_pitch;
+}
+
 static void
 radeon_map_renderbuffer(struct gl_context *ctx,
 		       struct gl_renderbuffer *rb,
@@ -82,57 +239,177 @@ radeon_map_renderbuffer(struct gl_context *ctx,
    struct radeon_renderbuffer *rrb = radeon_renderbuffer(rb);
    GLubyte *map;
    GLboolean ok;
-   int stride, ret;
+   int stride, flip_stride;
+   int ret;
+   int src_x, src_y;
 
-   assert(rrb && rrb->bo);
+   if (!rrb || !rrb->bo) {
+	   *out_map = NULL;
+	   *out_stride = 0;
+	   return;
+   }
 
-   /* Make a temporary buffer and blit the current contents of the renderbuffer
-    * out to it.  This gives us linear access to the buffer, instead of having
-    * to do detiling in software.
-    */
-   assert(!rrb->map_bo);
-   rrb->map_bo = radeon_bo_open(rmesa->radeonScreen->bom, 0,
-				rrb->pitch * h, 4,
-				RADEON_GEM_DOMAIN_GTT, 0);
    rrb->map_mode = mode;
    rrb->map_x = x;
    rrb->map_y = y;
    rrb->map_w = w;
    rrb->map_h = h;
+   rrb->map_pitch = rrb->pitch;
 
-   ok = rmesa->vtbl.check_blit(rb->Format);
-   assert(ok);
+   ok = rmesa->vtbl.check_blit(rb->Format, rrb->pitch / rrb->cpp);
+   if (ok) {
+       if (rb->Name) {
+	   src_x = x;
+	   src_y = y;
+       } else {
+	   src_x = x;
+	   src_y = rrb->base.Base.Height - y - h;
+       }
 
-   ok = rmesa->vtbl.blit(ctx, rrb->bo, rrb->draw_offset,
-			 rb->Format, rrb->pitch / rrb->cpp,
-			 rb->Width, rb->Height,
-			 x, y,
-			 rrb->map_bo, 0,
-			 rb->Format, rrb->pitch / rrb->cpp,
-			 w, h,
-			 0, 0,
-			 w, h,
-			 GL_FALSE);
-   assert(ok);
+       /* Make a temporary buffer and blit the current contents of the renderbuffer
+	* out to it.  This gives us linear access to the buffer, instead of having
+	* to do detiling in software.
+	*/
 
-   radeon_bo_wait(rrb->map_bo);
-   ret = radeon_bo_map(rrb->map_bo, !!(mode & GL_MAP_WRITE_BIT));
-   assert(!ret);
+       rrb->map_pitch = rrb->pitch;
 
-   map = rrb->map_bo->ptr;
-   stride = rrb->pitch;
+       assert(!rrb->map_bo);
+       rrb->map_bo = radeon_bo_open(rmesa->radeonScreen->bom, 0,
+				    rrb->map_pitch * h, 4,
+				    RADEON_GEM_DOMAIN_GTT, 0);
+       
+       ok = rmesa->vtbl.blit(ctx, rrb->bo, rrb->draw_offset,
+			     rb->Format, rrb->pitch / rrb->cpp,
+			     rb->Width, rb->Height,
+			     src_x, src_y,
+			     rrb->map_bo, 0,
+			     rb->Format, rrb->map_pitch / rrb->cpp,
+			     w, h,
+			     0, 0,
+			     w, h,
+			     GL_FALSE);
+       assert(ok);
 
-   if (rb->Name == 0) {
-      map += stride * (rb->Height - 1);
-      stride = -stride;
+       ret = radeon_bo_map(rrb->map_bo, !!(mode & GL_MAP_WRITE_BIT));
+       assert(!ret);
+
+       map = rrb->map_bo->ptr;
+
+       if (rb->Name) {
+	   *out_map = map;
+	   *out_stride = rrb->map_pitch;
+       } else {
+	   *out_map = map + (h - 1) * rrb->map_pitch;
+	   *out_stride = -rrb->map_pitch;
+       }
+       return;
    }
 
-   map += x * _mesa_get_format_bytes(rb->Format);
+   /* sw fallback flush stuff */
+   if (radeon_bo_is_referenced_by_cs(rrb->bo, rmesa->cmdbuf.cs)) {
+      radeon_firevertices(rmesa);
+   }
+
+   if ((rmesa->radeonScreen->chip_flags & RADEON_CHIPSET_DEPTH_ALWAYS_TILED) && !rrb->has_surface) {
+       if (rb->Format == MESA_FORMAT_S8_Z24 || rb->Format == MESA_FORMAT_X8_Z24) {
+	   radeon_map_renderbuffer_s8z24(ctx, rb, x, y, w, h,
+					 mode, out_map, out_stride);
+	   return;
+       }
+       if (rb->Format == MESA_FORMAT_Z16) {
+	   radeon_map_renderbuffer_z16(ctx, rb, x, y, w, h,
+				       mode, out_map, out_stride);
+	   return;
+       }
+   }
+
+   ret = radeon_bo_map(rrb->bo, !!(mode & GL_MAP_WRITE_BIT));
+   assert(!ret);
+
+   map = rrb->bo->ptr;
+   stride = rrb->map_pitch;
+
+   if (rb->Name == 0) {
+      y = rb->Height - 1 - y;
+      flip_stride = -stride;
+   } else {
+      flip_stride = stride;
+      map += rrb->draw_offset;
+   }
+
+   map += x * rrb->cpp;
    map += (int)y * stride;
 
    *out_map = map;
-   *out_stride = stride;
+   *out_stride = flip_stride;
 }
+
+static void
+radeon_unmap_renderbuffer_s8z24(struct gl_context *ctx,
+			  struct gl_renderbuffer *rb)
+{
+   struct radeon_renderbuffer *rrb = radeon_renderbuffer(rb);
+
+   if (!rrb->map_buffer)
+     return;
+
+   if (rrb->map_mode & GL_MAP_WRITE_BIT) {
+       uint32_t *untiled_s8z24_map = rrb->map_buffer;
+       uint32_t *tiled_s8z24_map;
+       int y_flip = (rb->Name == 0) ? -1 : 1;
+       int y_bias = (rb->Name == 0) ? (rb->Height - 1) : 0;
+
+       radeon_bo_map(rrb->bo, 1);
+       
+       tiled_s8z24_map = rrb->bo->ptr;
+
+       for (uint32_t pix_y = 0; pix_y < rrb->map_h; pix_y++) {
+	   for (uint32_t pix_x = 0; pix_x < rrb->map_w; pix_x++) {
+	       uint32_t flipped_y = y_flip * (int32_t)(pix_y + rrb->map_y) + y_bias;
+	       uint32_t dst_offset = get_depth_z32(rrb, rrb->map_x + pix_x, flipped_y);
+	       uint32_t src_offset = pix_y * rrb->map_pitch + pix_x * rrb->cpp;
+	       tiled_s8z24_map[dst_offset/4] = untiled_s8z24_map[src_offset/4];
+	   }
+       }
+       radeon_bo_unmap(rrb->bo);
+   }
+   free(rrb->map_buffer);
+   rrb->map_buffer = NULL;
+}
+
+static void
+radeon_unmap_renderbuffer_z16(struct gl_context *ctx,
+			      struct gl_renderbuffer *rb)
+{
+   struct radeon_renderbuffer *rrb = radeon_renderbuffer(rb);
+
+   if (!rrb->map_buffer)
+     return;
+
+   if (rrb->map_mode & GL_MAP_WRITE_BIT) {
+       uint16_t *untiled_z16_map = rrb->map_buffer;
+       uint16_t *tiled_z16_map;
+       int y_flip = (rb->Name == 0) ? -1 : 1;
+       int y_bias = (rb->Name == 0) ? (rb->Height - 1) : 0;
+
+       radeon_bo_map(rrb->bo, 1);
+       
+       tiled_z16_map = rrb->bo->ptr;
+
+       for (uint32_t pix_y = 0; pix_y < rrb->map_h; pix_y++) {
+	   for (uint32_t pix_x = 0; pix_x < rrb->map_w; pix_x++) {
+	       uint32_t flipped_y = y_flip * (int32_t)(pix_y + rrb->map_y) + y_bias;
+	       uint32_t dst_offset = get_depth_z16(rrb, rrb->map_x + pix_x, flipped_y);
+	       uint32_t src_offset = pix_y * rrb->map_pitch + pix_x * rrb->cpp;
+	       tiled_z16_map[dst_offset/2] = untiled_z16_map[src_offset/2];
+	   }
+       }
+       radeon_bo_unmap(rrb->bo);
+   }
+   free(rrb->map_buffer);
+   rrb->map_buffer = NULL;
+}
+
 
 static void
 radeon_unmap_renderbuffer(struct gl_context *ctx,
@@ -142,11 +419,28 @@ radeon_unmap_renderbuffer(struct gl_context *ctx,
    struct radeon_renderbuffer *rrb = radeon_renderbuffer(rb);
    GLboolean ok;
 
+   if ((rmesa->radeonScreen->chip_flags & RADEON_CHIPSET_DEPTH_ALWAYS_TILED) && !rrb->has_surface) {
+       if (rb->Format == MESA_FORMAT_S8_Z24 || rb->Format == MESA_FORMAT_X8_Z24) {
+	   radeon_unmap_renderbuffer_s8z24(ctx, rb);
+	   return;
+       }
+       if (rb->Format == MESA_FORMAT_Z16) {
+	   radeon_unmap_renderbuffer_z16(ctx, rb);
+	   return;
+       }
+   }
+
+   if (!rrb->map_bo) {
+	   if (rrb->bo)
+		   radeon_bo_unmap(rrb->bo);
+	   return;
+   }
+
    radeon_bo_unmap(rrb->map_bo);
 
    if (rrb->map_mode & GL_MAP_WRITE_BIT) {
       ok = rmesa->vtbl.blit(ctx, rrb->map_bo, 0,
-			    rb->Format, rrb->pitch / rrb->cpp,
+			    rb->Format, rrb->map_pitch / rrb->cpp,
 			    rrb->map_w, rrb->map_h,
 			    0, 0,
 			    rrb->bo, rrb->draw_offset,
@@ -162,16 +456,6 @@ radeon_unmap_renderbuffer(struct gl_context *ctx,
    rrb->map_bo = NULL;
 }
 
-static void *
-radeon_get_pointer(struct gl_context *ctx, struct gl_renderbuffer *rb,
-		   GLint x, GLint y)
-{
-  radeon_print(RADEON_TEXTURE, RADEON_TRACE,
-		"%s(%p, rb %p) \n",
-		__func__, ctx, rb);
-
-  return NULL;
-}
 
 /**
  * Called via glRenderbufferStorageEXT() to set the format and allocate
@@ -197,7 +481,6 @@ radeon_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffe
    case GL_RGB4:
    case GL_RGB5:
       rb->Format = _radeon_texformat_rgb565;
-      rb->DataType = GL_UNSIGNED_BYTE;
       cpp = 2;
       break;
    case GL_RGB:
@@ -206,7 +489,6 @@ radeon_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffe
    case GL_RGB12:
    case GL_RGB16:
       rb->Format = _radeon_texformat_argb8888;
-      rb->DataType = GL_UNSIGNED_BYTE;
       cpp = 4;
       break;
    case GL_RGBA:
@@ -218,7 +500,6 @@ radeon_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffe
    case GL_RGBA12:
    case GL_RGBA16:
       rb->Format = _radeon_texformat_argb8888;
-      rb->DataType = GL_UNSIGNED_BYTE;
       cpp = 4;
       break;
    case GL_STENCIL_INDEX:
@@ -228,25 +509,21 @@ radeon_alloc_renderbuffer_storage(struct gl_context * ctx, struct gl_renderbuffe
    case GL_STENCIL_INDEX16_EXT:
       /* alloc a depth+stencil buffer */
       rb->Format = MESA_FORMAT_S8_Z24;
-      rb->DataType = GL_UNSIGNED_INT_24_8_EXT;
       cpp = 4;
       break;
    case GL_DEPTH_COMPONENT16:
       rb->Format = MESA_FORMAT_Z16;
-      rb->DataType = GL_UNSIGNED_SHORT;
       cpp = 2;
       break;
    case GL_DEPTH_COMPONENT:
    case GL_DEPTH_COMPONENT24:
    case GL_DEPTH_COMPONENT32:
       rb->Format = MESA_FORMAT_X8_Z24;
-      rb->DataType = GL_UNSIGNED_INT;
       cpp = 4;
       break;
    case GL_DEPTH_STENCIL_EXT:
    case GL_DEPTH24_STENCIL8_EXT:
       rb->Format = MESA_FORMAT_S8_Z24;
-      rb->DataType = GL_UNSIGNED_INT_24_8_EXT;
       cpp = 4;
       break;
    default:
@@ -320,7 +597,6 @@ radeon_image_target_renderbuffer_storage(struct gl_context *ctx,
    rb->Width = image->width;
    rb->Height = image->height;
    rb->Format = image->format;
-   rb->DataType = image->data_type;
    rb->_BaseFormat = _mesa_base_fbo_format(radeon->glCtx,
                                            image->internal_format);
 }
@@ -369,7 +645,7 @@ radeon_resize_buffers(struct gl_context *ctx, struct gl_framebuffer *fb,
 
    /* Make sure all window system renderbuffers are up to date */
    for (i = 0; i < 2; i++) {
-      struct gl_renderbuffer *rb = &radeon_fb->color_rb[i]->base;
+      struct gl_renderbuffer *rb = &radeon_fb->color_rb[i]->base.Base;
 
       /* only resize if size is changing */
       if (rb && (rb->Width != width || rb->Height != height)) {
@@ -397,6 +673,7 @@ struct radeon_renderbuffer *
 radeon_create_renderbuffer(gl_format format, __DRIdrawable *driDrawPriv)
 {
     struct radeon_renderbuffer *rrb;
+    struct gl_renderbuffer *rb;
 
     rrb = CALLOC_STRUCT(radeon_renderbuffer);
 
@@ -407,62 +684,18 @@ radeon_create_renderbuffer(gl_format format, __DRIdrawable *driDrawPriv)
     if (!rrb)
 	return NULL;
 
-    _mesa_init_renderbuffer(&rrb->base, 0);
-    rrb->base.ClassID = RADEON_RB_CLASS;
+    rb = &rrb->base.Base;
 
-    rrb->base.Format = format;
-
-    switch (format) {
-        case MESA_FORMAT_RGB565:
-	    assert(_mesa_little_endian());
-	    rrb->base.DataType = GL_UNSIGNED_BYTE;
-	    break;
-        case MESA_FORMAT_RGB565_REV:
-	    assert(!_mesa_little_endian());
-	    rrb->base.DataType = GL_UNSIGNED_BYTE;
-	    break;
-        case MESA_FORMAT_XRGB8888:
-	    assert(_mesa_little_endian());
-	    rrb->base.DataType = GL_UNSIGNED_BYTE;
-	    break;
-        case MESA_FORMAT_XRGB8888_REV:
-	    assert(!_mesa_little_endian());
-	    rrb->base.DataType = GL_UNSIGNED_BYTE;
-	    break;
-	case MESA_FORMAT_ARGB8888:
-	    assert(_mesa_little_endian());
-	    rrb->base.DataType = GL_UNSIGNED_BYTE;
-	    break;
-	case MESA_FORMAT_ARGB8888_REV:
-	    assert(!_mesa_little_endian());
-	    rrb->base.DataType = GL_UNSIGNED_BYTE;
-	    break;
-	case MESA_FORMAT_S8:
-	    rrb->base.DataType = GL_UNSIGNED_BYTE;
-	    break;
-	case MESA_FORMAT_Z16:
-	    rrb->base.DataType = GL_UNSIGNED_SHORT;
-	    break;
-	case MESA_FORMAT_X8_Z24:
-	    rrb->base.DataType = GL_UNSIGNED_INT;
-	    break;
-	case MESA_FORMAT_S8_Z24:
-	    rrb->base.DataType = GL_UNSIGNED_INT_24_8_EXT;
-	    break;
-	default:
-	    fprintf(stderr, "%s: Unknown format %s\n",
-                    __FUNCTION__, _mesa_get_format_name(format));
-	    _mesa_delete_renderbuffer(&rrb->base);
-	    return NULL;
-    }
-    rrb->base._BaseFormat = _mesa_get_format_base_format(format);
+    _mesa_init_renderbuffer(rb, 0);
+    rb->ClassID = RADEON_RB_CLASS;
+    rb->Format = format;
+    rb->_BaseFormat = _mesa_get_format_base_format(format);
+    rb->InternalFormat = _mesa_get_format_base_format(format);
 
     rrb->dPriv = driDrawPriv;
-    rrb->base.InternalFormat = _mesa_get_format_base_format(format);
 
-    rrb->base.Delete = radeon_delete_renderbuffer;
-    rrb->base.AllocStorage = radeon_alloc_window_storage;
-    rrb->base.GetPointer = radeon_get_pointer;
+    rb->Delete = radeon_delete_renderbuffer;
+    rb->AllocStorage = radeon_alloc_window_storage;
 
     rrb->bo = NULL;
     return rrb;
@@ -472,6 +705,8 @@ static struct gl_renderbuffer *
 radeon_new_renderbuffer(struct gl_context * ctx, GLuint name)
 {
   struct radeon_renderbuffer *rrb;
+  struct gl_renderbuffer *rb;
+
 
   rrb = CALLOC_STRUCT(radeon_renderbuffer);
 
@@ -482,14 +717,14 @@ radeon_new_renderbuffer(struct gl_context * ctx, GLuint name)
   if (!rrb)
     return NULL;
 
-  _mesa_init_renderbuffer(&rrb->base, name);
-  rrb->base.ClassID = RADEON_RB_CLASS;
+  rb = &rrb->base.Base;
 
-  rrb->base.Delete = radeon_delete_renderbuffer;
-  rrb->base.AllocStorage = radeon_alloc_renderbuffer_storage;
-  rrb->base.GetPointer = radeon_get_pointer;
+  _mesa_init_renderbuffer(rb, name);
+  rb->ClassID = RADEON_RB_CLASS;
+  rb->Delete = radeon_delete_renderbuffer;
+  rb->AllocStorage = radeon_alloc_renderbuffer_storage;
 
-  return &rrb->base;
+  return rb;
 }
 
 static void
@@ -530,48 +765,21 @@ static GLboolean
 radeon_update_wrapper(struct gl_context *ctx, struct radeon_renderbuffer *rrb, 
 		     struct gl_texture_image *texImage)
 {
+	struct gl_renderbuffer *rb = &rrb->base.Base;
+
 	radeon_print(RADEON_TEXTURE, RADEON_TRACE,
 		"%s(%p, rrb %p, texImage %p, texFormat %s) \n",
 		__func__, ctx, rrb, texImage, _mesa_get_format_name(texImage->TexFormat));
 
-	switch (texImage->TexFormat) {
-		case MESA_FORMAT_RGBA8888:
-		case MESA_FORMAT_RGBA8888_REV:
-		case MESA_FORMAT_ARGB8888:
-		case MESA_FORMAT_ARGB8888_REV:
-		case MESA_FORMAT_XRGB8888:
-		case MESA_FORMAT_XRGB8888_REV:
-		case MESA_FORMAT_RGB565:
-		case MESA_FORMAT_RGB565_REV:
-		case MESA_FORMAT_RGBA5551:
-		case MESA_FORMAT_ARGB1555:
-		case MESA_FORMAT_ARGB1555_REV:
-		case MESA_FORMAT_ARGB4444:
-		case MESA_FORMAT_ARGB4444_REV:
-			rrb->base.DataType = GL_UNSIGNED_BYTE;
-			break;
-		case MESA_FORMAT_Z16:
-			rrb->base.DataType = GL_UNSIGNED_SHORT;
-			break;
-		case MESA_FORMAT_X8_Z24:
-			rrb->base.DataType = GL_UNSIGNED_INT;
-			break;
-		case MESA_FORMAT_S8_Z24:
-			rrb->base.DataType = GL_UNSIGNED_INT_24_8_EXT;
-			break;
-		default:
-			_mesa_problem(ctx, "Unexpected texture format in radeon_update_wrapper()");
-	}
-		
 	rrb->cpp = _mesa_get_format_bytes(texImage->TexFormat);
 	rrb->pitch = texImage->Width * rrb->cpp;
-	rrb->base.Format = texImage->TexFormat;
-	rrb->base.InternalFormat = texImage->InternalFormat;
-	rrb->base._BaseFormat = _mesa_base_fbo_format(ctx, rrb->base.InternalFormat);
-	rrb->base.Width = texImage->Width;
-	rrb->base.Height = texImage->Height;
-	rrb->base.Delete = radeon_delete_renderbuffer;
-	rrb->base.AllocStorage = radeon_nop_alloc_storage;
+	rb->Format = texImage->TexFormat;
+	rb->InternalFormat = texImage->InternalFormat;
+	rb->_BaseFormat = _mesa_base_fbo_format(ctx, rb->InternalFormat);
+	rb->Width = texImage->Width;
+	rb->Height = texImage->Height;
+	rb->Delete = radeon_delete_renderbuffer;
+	rb->AllocStorage = radeon_nop_alloc_storage;
 
 	return GL_TRUE;
 }
@@ -595,8 +803,8 @@ radeon_wrap_texture(struct gl_context * ctx, struct gl_texture_image *texImage)
       return NULL;
    }
 
-   _mesa_init_renderbuffer(&rrb->base, name);
-   rrb->base.ClassID = RADEON_RB_CLASS;
+   _mesa_init_renderbuffer(&rrb->base.Base, name);
+   rrb->base.Base.ClassID = RADEON_RB_CLASS;
 
    if (!radeon_update_wrapper(ctx, rrb, texImage)) {
       free(rrb);
@@ -627,7 +835,7 @@ radeon_render_texture(struct gl_context * ctx,
 
    radeon_image = (radeon_texture_image *)newImage;
 
-   if (!radeon_image->mt || newImage->Border != 0) {
+   if (!radeon_image->mt) {
       /* Fallback on drawing to a texture without a miptree.
        */
       _mesa_reference_renderbuffer(&att->Renderbuffer, NULL);
@@ -638,7 +846,7 @@ radeon_render_texture(struct gl_context * ctx,
       rrb = radeon_wrap_texture(ctx, newImage);
       if (rrb) {
          /* bind the wrapper to the attachment point */
-         _mesa_reference_renderbuffer(&att->Renderbuffer, &rrb->base);
+         _mesa_reference_renderbuffer(&att->Renderbuffer, &rrb->base.Base);
       }
       else {
          /* fallback to software rendering */
@@ -656,7 +864,7 @@ radeon_render_texture(struct gl_context * ctx,
    DBG("Begin render texture tid %lx tex=%u w=%d h=%d refcount=%d\n",
        _glthread_GetID(),
        att->Texture->Name, newImage->Width, newImage->Height,
-       rrb->base.RefCount);
+       rrb->base.Base.RefCount);
 
    /* point the renderbufer's region to the texture image region */
    if (rrb->bo != radeon_image->mt->bo) {
@@ -681,6 +889,7 @@ radeon_render_texture(struct gl_context * ctx,
     * the image we are rendering to */
    rrb->draw_offset = imageOffset;
    rrb->pitch = radeon_image->mt->levels[att->TextureLevel].rowstride;
+   radeon_image->used_as_render_target = GL_TRUE;
 
    /* update drawing region, etc */
    radeon_draw_buffer(ctx, fb);
@@ -690,7 +899,16 @@ static void
 radeon_finish_render_texture(struct gl_context * ctx,
                             struct gl_renderbuffer_attachment *att)
 {
+    struct gl_texture_object *tex_obj = att->Texture;
+    struct gl_texture_image *image =
+	tex_obj->Image[att->CubeMapFace][att->TextureLevel];
+    radeon_texture_image *radeon_image = (radeon_texture_image *)image;
+    
+    if (radeon_image)
+	radeon_image->used_as_render_target = GL_FALSE;
 
+    if (ctx->Driver.Flush)
+        ctx->Driver.Flush(ctx); /* +r6/r7 */
 }
 static void
 radeon_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)

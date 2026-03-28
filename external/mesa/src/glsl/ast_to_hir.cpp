@@ -54,6 +54,7 @@
 #include "glsl_parser_extras.h"
 #include "ast.h"
 #include "glsl_types.h"
+#include "program/hash_table.h"
 #include "ir.h"
 
 void
@@ -664,6 +665,7 @@ mark_whole_array_access(ir_rvalue *access)
 
 ir_rvalue *
 do_assignment(exec_list *instructions, struct _mesa_glsl_parse_state *state,
+	      const char *non_lvalue_description,
 	      ir_rvalue *lhs, ir_rvalue *rhs, bool is_initializer,
 	      YYLTYPE lhs_loc)
 {
@@ -671,8 +673,13 @@ do_assignment(exec_list *instructions, struct _mesa_glsl_parse_state *state,
    bool error_emitted = (lhs->type->is_error() || rhs->type->is_error());
 
    if (!error_emitted) {
-      if (lhs->variable_referenced() != NULL
-          && lhs->variable_referenced()->read_only) {
+      if (non_lvalue_description != NULL) {
+         _mesa_glsl_error(&lhs_loc, state,
+                          "assignment to %s",
+			  non_lvalue_description);
+	 error_emitted = true;
+      } else if (lhs->variable_referenced() != NULL
+		 && lhs->variable_referenced()->read_only) {
          _mesa_glsl_error(&lhs_loc, state,
                           "assignment to read-only variable '%s'",
                           lhs->variable_referenced()->name);
@@ -768,11 +775,6 @@ get_lvalue_copy(exec_list *instructions, ir_rvalue *lvalue)
 
    instructions->push_tail(new(ctx) ir_assignment(new(ctx) ir_dereference_variable(var),
 						  lvalue, NULL));
-
-   /* Once we've created this temporary, mark it read only so it's no
-    * longer considered an lvalue.
-    */
-   var->read_only = true;
 
    return new(ctx) ir_dereference_variable(var);
 }
@@ -1030,7 +1032,9 @@ ast_expression::hir(exec_list *instructions,
       op[0] = this->subexpressions[0]->hir(instructions, state);
       op[1] = this->subexpressions[1]->hir(instructions, state);
 
-      result = do_assignment(instructions, state, op[0], op[1], false,
+      result = do_assignment(instructions, state,
+			     this->subexpressions[0]->non_lvalue_description,
+			     op[0], op[1], false,
 			     this->subexpressions[0]->get_location());
       error_emitted = result->type->is_error();
       break;
@@ -1184,7 +1188,7 @@ ast_expression::hir(exec_list *instructions,
 	 error_emitted = true;
       }
 
-      type = op[0]->type;
+      type = error_emitted ? glsl_type::error_type : op[0]->type;
       result = new(ctx) ir_expression(ir_unop_bit_not, type, op[0], NULL);
       break;
 
@@ -1310,6 +1314,7 @@ ast_expression::hir(exec_list *instructions,
 						   op[0], op[1]);
 
       result = do_assignment(instructions, state,
+			     this->subexpressions[0]->non_lvalue_description,
 			     op[0]->clone(ctx, NULL), temp_rhs, false,
 			     this->subexpressions[0]->get_location());
       error_emitted = (op[0]->type->is_error());
@@ -1335,6 +1340,7 @@ ast_expression::hir(exec_list *instructions,
 					op[0], op[1]);
 
       result = do_assignment(instructions, state,
+			     this->subexpressions[0]->non_lvalue_description,
 			     op[0]->clone(ctx, NULL), temp_rhs, false,
 			     this->subexpressions[0]->get_location());
       error_emitted = type->is_error();
@@ -1349,8 +1355,9 @@ ast_expression::hir(exec_list *instructions,
                                &loc);
       ir_rvalue *temp_rhs = new(ctx) ir_expression(operations[this->oper],
                                                    type, op[0], op[1]);
-      result = do_assignment(instructions, state, op[0]->clone(ctx, NULL),
-                             temp_rhs, false,
+      result = do_assignment(instructions, state,
+			     this->subexpressions[0]->non_lvalue_description,
+			     op[0]->clone(ctx, NULL), temp_rhs, false,
                              this->subexpressions[0]->get_location());
       error_emitted = op[0]->type->is_error() || op[1]->type->is_error();
       break;
@@ -1365,8 +1372,9 @@ ast_expression::hir(exec_list *instructions,
                                    state, &loc);
       ir_rvalue *temp_rhs = new(ctx) ir_expression(operations[this->oper],
                                                    type, op[0], op[1]);
-      result = do_assignment(instructions, state, op[0]->clone(ctx, NULL),
-                             temp_rhs, false,
+      result = do_assignment(instructions, state,
+			     this->subexpressions[0]->non_lvalue_description,
+			     op[0]->clone(ctx, NULL), temp_rhs, false,
                              this->subexpressions[0]->get_location());
       error_emitted = op[0]->type->is_error() || op[1]->type->is_error();
       break;
@@ -1463,6 +1471,9 @@ ast_expression::hir(exec_list *instructions,
 
    case ast_pre_inc:
    case ast_pre_dec: {
+      this->non_lvalue_description = (this->oper == ast_pre_inc)
+	 ? "pre-increment operation" : "pre-decrement operation";
+
       op[0] = this->subexpressions[0]->hir(instructions, state);
       op[1] = constant_one_for_inc_dec(ctx, op[0]->type);
 
@@ -1473,6 +1484,7 @@ ast_expression::hir(exec_list *instructions,
 					op[0], op[1]);
 
       result = do_assignment(instructions, state,
+			     this->subexpressions[0]->non_lvalue_description,
 			     op[0]->clone(ctx, NULL), temp_rhs, false,
 			     this->subexpressions[0]->get_location());
       error_emitted = op[0]->type->is_error();
@@ -1481,6 +1493,8 @@ ast_expression::hir(exec_list *instructions,
 
    case ast_post_inc:
    case ast_post_dec: {
+      this->non_lvalue_description = (this->oper == ast_post_inc)
+	 ? "post-increment operation" : "post-decrement operation";
       op[0] = this->subexpressions[0]->hir(instructions, state);
       op[1] = constant_one_for_inc_dec(ctx, op[0]->type);
 
@@ -1498,6 +1512,7 @@ ast_expression::hir(exec_list *instructions,
       result = get_lvalue_copy(instructions, op[0]->clone(ctx, NULL));
 
       (void)do_assignment(instructions, state,
+			  this->subexpressions[0]->non_lvalue_description,
 			  op[0]->clone(ctx, NULL), temp_rhs, false,
 			  this->subexpressions[0]->get_location());
 
@@ -1996,6 +2011,29 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
    else
       var->interpolation = INTERP_QUALIFIER_NONE;
 
+   if (var->interpolation != INTERP_QUALIFIER_NONE &&
+       !(state->target == vertex_shader && var->mode == ir_var_out) &&
+       !(state->target == fragment_shader && var->mode == ir_var_in)) {
+      const char *qual_string = NULL;
+      switch (var->interpolation) {
+      case INTERP_QUALIFIER_FLAT:
+	 qual_string = "flat";
+	 break;
+      case INTERP_QUALIFIER_NOPERSPECTIVE:
+	 qual_string = "noperspective";
+	 break;
+      case INTERP_QUALIFIER_SMOOTH:
+	 qual_string = "smooth";
+	 break;
+      }
+
+      _mesa_glsl_error(loc, state,
+		       "interpolation qualifier `%s' can only be applied to "
+		       "vertex shader outputs and fragment shader inputs.",
+		       qual_string);
+
+   }
+
    var->pixel_center_integer = qual->flags.q.pixel_center_integer;
    var->origin_upper_left = qual->flags.q.origin_upper_left;
    if ((qual->flags.q.origin_upper_left || qual->flags.q.pixel_center_integer)
@@ -2090,6 +2128,7 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
     * The following extension do not allow the deprecated keywords:
     *
     *    GL_AMD_conservative_depth
+    *    GL_ARB_conservative_depth
     *    GL_ARB_gpu_shader5
     *    GL_ARB_separate_shader_objects
     *    GL_ARB_tesselation_shader
@@ -2122,9 +2161,11 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
       + qual->flags.q.depth_less
       + qual->flags.q.depth_unchanged;
    if (depth_layout_count > 0
-       && !state->AMD_conservative_depth_enable) {
+       && !state->AMD_conservative_depth_enable
+       && !state->ARB_conservative_depth_enable) {
        _mesa_glsl_error(loc, state,
-                        "extension GL_AMD_conservative_depth must be enabled "
+                        "extension GL_AMD_conservative_depth or "
+                        "GL_ARB_conservative_depth must be enabled "
 			"to use depth layout qualifiers");
    } else if (depth_layout_count > 0
               && strcmp(var->name, "gl_FragDepth") != 0) {
@@ -2237,7 +2278,8 @@ get_variable_being_redeclared(ir_variable *var, ast_declaration *decl,
       earlier->interpolation = var->interpolation;
 
       /* Layout qualifiers for gl_FragDepth. */
-   } else if (state->AMD_conservative_depth_enable
+   } else if ((state->AMD_conservative_depth_enable ||
+               state->ARB_conservative_depth_enable)
 	      && strcmp(var->name, "gl_FragDepth") == 0
 	      && earlier->type == var->type
 	      && earlier->mode == var->mode) {
@@ -2361,6 +2403,7 @@ process_initializer(ir_variable *var, ast_declaration *decl,
       const glsl_type *initializer_type;
       if (!type->qualifier.flags.q.uniform) {
 	 result = do_assignment(initializer_instructions, state,
+				NULL,
 				lhs, rhs, true,
 				type->get_location());
 	 initializer_type = result->type;
@@ -3355,34 +3398,49 @@ ast_jump_statement::hir(exec_list *instructions,
 
    case ast_break:
    case ast_continue:
-      /* FINISHME: Handle switch-statements.  They cannot contain 'continue',
-       * FINISHME: and they use a different IR instruction for 'break'.
-       */
-      /* FINISHME: Correctly handle the nesting.  If a switch-statement is
-       * FINISHME: inside a loop, a 'continue' is valid and will bind to the
-       * FINISHME: loop.
-       */
-      if (state->loop_or_switch_nesting == NULL) {
+      if (mode == ast_continue &&
+	  state->loop_nesting_ast == NULL) {
 	 YYLTYPE loc = this->get_location();
 
 	 _mesa_glsl_error(& loc, state,
-			  "`%s' may only appear in a loop",
-			  (mode == ast_break) ? "break" : "continue");
-      } else {
-	 ir_loop *const loop = state->loop_or_switch_nesting->as_loop();
+			  "continue may only appear in a loop");
+      } else if (mode == ast_break &&
+		 state->loop_nesting_ast == NULL &&
+		 state->switch_state.switch_nesting_ast == NULL) {
+	 YYLTYPE loc = this->get_location();
 
-	 /* Inline the for loop expression again, since we don't know
-	  * where near the end of the loop body the normal copy of it
+	 _mesa_glsl_error(& loc, state,
+			  "break may only appear in a loop or a switch");
+      } else {
+	 /* For a loop, inline the for loop expression again,
+	  * since we don't know where near the end of
+	  * the loop body the normal copy of it
 	  * is going to be placed.
 	  */
-	 if (mode == ast_continue &&
-	     state->loop_or_switch_nesting_ast->rest_expression) {
-	    state->loop_or_switch_nesting_ast->rest_expression->hir(instructions,
-								    state);
+	 if (state->loop_nesting_ast != NULL &&
+	     mode == ast_continue &&
+	     state->loop_nesting_ast->rest_expression) {
+	    state->loop_nesting_ast->rest_expression->hir(instructions,
+							  state);
 	 }
 
-	 if (loop != NULL) {
-	    ir_loop_jump *const jump =
+	 if (state->switch_state.is_switch_innermost &&
+	     mode == ast_break) {
+	    /* Force break out of switch by setting is_break switch state.
+	     */
+	    ir_variable *const is_break_var = state->switch_state.is_break_var;
+	    ir_dereference_variable *const deref_is_break_var =
+	       new(ctx) ir_dereference_variable(is_break_var);
+	    ir_constant *const true_val = new(ctx) ir_constant(true);
+	    ir_assignment *const set_break_var =
+	       new(ctx) ir_assignment(deref_is_break_var,
+				      true_val,
+				      NULL);
+	    
+	    instructions->push_tail(set_break_var);
+	 }
+	 else {
+	    ir_loop_jump *const jump = 
 	       new(ctx) ir_loop_jump((mode == ast_break)
 				     ? ir_loop_jump::jump_break
 				     : ir_loop_jump::jump_continue);
@@ -3445,86 +3503,367 @@ ast_selection_statement::hir(exec_list *instructions,
 }
 
 
-void
-ast_iteration_statement::condition_to_hir(ir_loop *stmt,
-					  struct _mesa_glsl_parse_state *state)
-{
-   void *ctx = state;
-
-   if (condition != NULL) {
-      ir_rvalue *const cond =
-	 condition->hir(& stmt->body_instructions, state);
-
-      if ((cond == NULL)
-	  || !cond->type->is_boolean() || !cond->type->is_scalar()) {
-	 YYLTYPE loc = condition->get_location();
-
-	 _mesa_glsl_error(& loc, state,
-			  "loop condition must be scalar boolean");
-      } else {
-	 /* As the first code in the loop body, generate a block that looks
-	  * like 'if (!condition) break;' as the loop termination condition.
-	  */
-	 ir_rvalue *const not_cond =
-	    new(ctx) ir_expression(ir_unop_logic_not, glsl_type::bool_type, cond,
-				   NULL);
-
-	 ir_if *const if_stmt = new(ctx) ir_if(not_cond);
-
-	 ir_jump *const break_stmt =
-	    new(ctx) ir_loop_jump(ir_loop_jump::jump_break);
-
-	 if_stmt->then_instructions.push_tail(break_stmt);
-	 stmt->body_instructions.push_tail(if_stmt);
-      }
-   }
-}
-
-
 ir_rvalue *
-ast_iteration_statement::hir(exec_list *instructions,
-			     struct _mesa_glsl_parse_state *state)
+ast_switch_statement::hir(exec_list *instructions,
+			  struct _mesa_glsl_parse_state *state)
 {
    void *ctx = state;
 
-   /* For-loops and while-loops start a new scope, but do-while loops do not.
+   ir_rvalue *const test_expression =
+      this->test_expression->hir(instructions, state);
+
+   /* From page 66 (page 55 of the PDF) of the GLSL 1.50 spec:
+    *
+    *    "The type of init-expression in a switch statement must be a 
+    *     scalar integer." 
+    *
+    * The checks are separated so that higher quality diagnostics can be
+    * generated for cases where the rule is violated.
     */
-   if (mode != ast_do_while)
-      state->symbols->push_scope();
+   if (!test_expression->type->is_integer()) {
+      YYLTYPE loc = this->test_expression->get_location();
 
-   if (init_statement != NULL)
-      init_statement->hir(instructions, state);
+      _mesa_glsl_error(& loc,
+		       state,
+		       "switch-statement expression must be scalar "
+		       "integer");
+   }
 
-   ir_loop *const stmt = new(ctx) ir_loop();
-   instructions->push_tail(stmt);
-
-   /* Track the current loop and / or switch-statement nesting.
+   /* Track the switch-statement nesting in a stack-like manner.
     */
-   ir_instruction *const nesting = state->loop_or_switch_nesting;
-   ast_iteration_statement *nesting_ast = state->loop_or_switch_nesting_ast;
+   struct glsl_switch_state saved = state->switch_state;
 
-   state->loop_or_switch_nesting = stmt;
-   state->loop_or_switch_nesting_ast = this;
+   state->switch_state.is_switch_innermost = true;
+   state->switch_state.switch_nesting_ast = this;
+   state->switch_state.labels_ht = hash_table_ctor(0, hash_table_pointer_hash,
+						   hash_table_pointer_compare);
+   state->switch_state.previous_default = NULL;
 
-   if (mode != ast_do_while)
-      condition_to_hir(stmt, state);
-
-   if (body != NULL)
-      body->hir(& stmt->body_instructions, state);
-
-   if (rest_expression != NULL)
-      rest_expression->hir(& stmt->body_instructions, state);
-
-   if (mode == ast_do_while)
-      condition_to_hir(stmt, state);
-
-   if (mode != ast_do_while)
-      state->symbols->pop_scope();
-
-   /* Restore previous nesting before returning.
+   /* Initalize is_fallthru state to false.
     */
-   state->loop_or_switch_nesting = nesting;
-   state->loop_or_switch_nesting_ast = nesting_ast;
+   ir_rvalue *const is_fallthru_val = new (ctx) ir_constant(false);
+   state->switch_state.is_fallthru_var =
+      new(ctx) ir_variable(glsl_type::bool_type,
+			   "switch_is_fallthru_tmp",
+			   ir_var_temporary);
+   instructions->push_tail(state->switch_state.is_fallthru_var);
+
+   ir_dereference_variable *deref_is_fallthru_var =
+      new(ctx) ir_dereference_variable(state->switch_state.is_fallthru_var);
+   instructions->push_tail(new(ctx) ir_assignment(deref_is_fallthru_var,
+						  is_fallthru_val,
+						  NULL));
+
+   /* Initalize is_break state to false.
+    */
+   ir_rvalue *const is_break_val = new (ctx) ir_constant(false);
+   state->switch_state.is_break_var = new(ctx) ir_variable(glsl_type::bool_type,
+							   "switch_is_break_tmp",
+							   ir_var_temporary);
+   instructions->push_tail(state->switch_state.is_break_var);
+
+   ir_dereference_variable *deref_is_break_var =
+      new(ctx) ir_dereference_variable(state->switch_state.is_break_var);
+   instructions->push_tail(new(ctx) ir_assignment(deref_is_break_var,
+						  is_break_val,
+						  NULL));
+
+   /* Cache test expression.
+    */
+   test_to_hir(instructions, state);
+   
+   /* Emit code for body of switch stmt.
+    */
+   body->hir(instructions, state);
+
+   hash_table_dtor(state->switch_state.labels_ht);
+
+   state->switch_state = saved;
+
+     /* Switch statements do not have r-values.
+      */
+     return NULL;
+  }
+
+
+  void
+  ast_switch_statement::test_to_hir(exec_list *instructions,
+				    struct _mesa_glsl_parse_state *state)
+  {
+     void *ctx = state;
+
+     /* Cache value of test expression.
+      */
+     ir_rvalue *const test_val =
+	test_expression->hir(instructions,
+			     state);
+
+     state->switch_state.test_var = new(ctx) ir_variable(glsl_type::int_type,
+							 "switch_test_tmp",
+							 ir_var_temporary);
+     ir_dereference_variable *deref_test_var =
+	new(ctx) ir_dereference_variable(state->switch_state.test_var);
+
+     instructions->push_tail(state->switch_state.test_var);
+     instructions->push_tail(new(ctx) ir_assignment(deref_test_var,
+						    test_val,
+						    NULL));
+  }
+
+
+  ir_rvalue *
+  ast_switch_body::hir(exec_list *instructions,
+		       struct _mesa_glsl_parse_state *state)
+  {
+     if (stmts != NULL)
+	stmts->hir(instructions, state);
+
+     /* Switch bodies do not have r-values.
+      */
+     return NULL;
+  }
+
+
+  ir_rvalue *
+  ast_case_statement_list::hir(exec_list *instructions,
+			       struct _mesa_glsl_parse_state *state)
+  {
+     foreach_list_typed (ast_case_statement, case_stmt, link, & this->cases)
+	case_stmt->hir(instructions, state);
+
+     /* Case statements do not have r-values.
+      */
+     return NULL;
+  }
+
+
+  ir_rvalue *
+  ast_case_statement::hir(exec_list *instructions,
+			  struct _mesa_glsl_parse_state *state)
+  {
+     labels->hir(instructions, state);
+
+     /* Conditionally set fallthru state based on break state.
+      */
+     ir_constant *const false_val = new(state) ir_constant(false);
+     ir_dereference_variable *const deref_is_fallthru_var =
+	new(state) ir_dereference_variable(state->switch_state.is_fallthru_var);
+     ir_dereference_variable *const deref_is_break_var =
+	new(state) ir_dereference_variable(state->switch_state.is_break_var);
+     ir_assignment *const reset_fallthru_on_break =
+	new(state) ir_assignment(deref_is_fallthru_var,
+				 false_val,
+				 deref_is_break_var);
+     instructions->push_tail(reset_fallthru_on_break);
+
+     /* Guard case statements depending on fallthru state.
+      */
+     ir_dereference_variable *const deref_fallthru_guard =
+	new(state) ir_dereference_variable(state->switch_state.is_fallthru_var);
+     ir_if *const test_fallthru = new(state) ir_if(deref_fallthru_guard);
+
+     foreach_list_typed (ast_node, stmt, link, & this->stmts)
+	stmt->hir(& test_fallthru->then_instructions, state);
+
+     instructions->push_tail(test_fallthru);
+
+     /* Case statements do not have r-values.
+      */
+     return NULL;
+  }
+
+
+  ir_rvalue *
+  ast_case_label_list::hir(exec_list *instructions,
+			   struct _mesa_glsl_parse_state *state)
+  {
+     foreach_list_typed (ast_case_label, label, link, & this->labels)
+	label->hir(instructions, state);
+
+     /* Case labels do not have r-values.
+      */
+     return NULL;
+  }
+
+
+  ir_rvalue *
+  ast_case_label::hir(exec_list *instructions,
+		      struct _mesa_glsl_parse_state *state)
+  {
+     void *ctx = state;
+
+     ir_dereference_variable *deref_fallthru_var =
+	new(ctx) ir_dereference_variable(state->switch_state.is_fallthru_var);
+
+     ir_rvalue *const true_val = new(ctx) ir_constant(true);
+
+     /* If not default case, ...
+      */
+     if (this->test_value != NULL) {
+	/* Conditionally set fallthru state based on
+	 * comparison of cached test expression value to case label.
+	 */
+	ir_rvalue *const label_rval = this->test_value->hir(instructions, state);
+	ir_constant *label_const = label_rval->constant_expression_value();
+
+	if (!label_const) {
+	   YYLTYPE loc = this->test_value->get_location();
+
+	   _mesa_glsl_error(& loc, state,
+			    "switch statement case label must be a "
+			    "constant expression");
+
+	   /* Stuff a dummy value in to allow processing to continue. */
+	   label_const = new(ctx) ir_constant(0);
+	} else {
+	   ast_expression *previous_label = (ast_expression *)
+	      hash_table_find(state->switch_state.labels_ht,
+			      (void *)(uintptr_t)label_const->value.u[0]);
+
+	   if (previous_label) {
+	      YYLTYPE loc = this->test_value->get_location();
+	      _mesa_glsl_error(& loc, state,
+			       "duplicate case value");
+
+	      loc = previous_label->get_location();
+	      _mesa_glsl_error(& loc, state,
+			       "this is the previous case label");
+	   } else {
+	      hash_table_insert(state->switch_state.labels_ht,
+				this->test_value,
+				(void *)(uintptr_t)label_const->value.u[0]);
+	   }
+	}
+
+	ir_dereference_variable *deref_test_var =
+	   new(ctx) ir_dereference_variable(state->switch_state.test_var);
+
+	ir_rvalue *const test_cond = new(ctx) ir_expression(ir_binop_all_equal,
+							    glsl_type::bool_type,
+							    label_const,
+							    deref_test_var);
+
+	ir_assignment *set_fallthru_on_test =
+	   new(ctx) ir_assignment(deref_fallthru_var,
+				  true_val,
+				  test_cond);
+
+	instructions->push_tail(set_fallthru_on_test);
+     } else { /* default case */
+	if (state->switch_state.previous_default) {
+	   printf("a\n");
+	   YYLTYPE loc = this->get_location();
+	   _mesa_glsl_error(& loc, state,
+			       "multiple default labels in one switch");
+
+	   printf("b\n");
+
+	   loc = state->switch_state.previous_default->get_location();
+	   _mesa_glsl_error(& loc, state,
+			    "this is the first default label");
+	}
+	state->switch_state.previous_default = this;
+
+	/* Set falltrhu state.
+	 */
+	ir_assignment *set_fallthru =
+	   new(ctx) ir_assignment(deref_fallthru_var,
+				  true_val,
+				  NULL);
+
+	instructions->push_tail(set_fallthru);
+     }
+
+     /* Case statements do not have r-values.
+      */
+     return NULL;
+  }
+
+
+  void
+  ast_iteration_statement::condition_to_hir(ir_loop *stmt,
+					    struct _mesa_glsl_parse_state *state)
+  {
+     void *ctx = state;
+
+     if (condition != NULL) {
+	ir_rvalue *const cond =
+	   condition->hir(& stmt->body_instructions, state);
+
+	if ((cond == NULL)
+	    || !cond->type->is_boolean() || !cond->type->is_scalar()) {
+	   YYLTYPE loc = condition->get_location();
+
+	   _mesa_glsl_error(& loc, state,
+			    "loop condition must be scalar boolean");
+	} else {
+	   /* As the first code in the loop body, generate a block that looks
+	    * like 'if (!condition) break;' as the loop termination condition.
+	    */
+	   ir_rvalue *const not_cond =
+	      new(ctx) ir_expression(ir_unop_logic_not, glsl_type::bool_type, cond,
+				     NULL);
+
+	   ir_if *const if_stmt = new(ctx) ir_if(not_cond);
+
+	   ir_jump *const break_stmt =
+	      new(ctx) ir_loop_jump(ir_loop_jump::jump_break);
+
+	   if_stmt->then_instructions.push_tail(break_stmt);
+	   stmt->body_instructions.push_tail(if_stmt);
+	}
+     }
+  }
+
+
+  ir_rvalue *
+  ast_iteration_statement::hir(exec_list *instructions,
+			       struct _mesa_glsl_parse_state *state)
+  {
+     void *ctx = state;
+
+     /* For-loops and while-loops start a new scope, but do-while loops do not.
+      */
+     if (mode != ast_do_while)
+	state->symbols->push_scope();
+
+     if (init_statement != NULL)
+	init_statement->hir(instructions, state);
+
+     ir_loop *const stmt = new(ctx) ir_loop();
+     instructions->push_tail(stmt);
+
+     /* Track the current loop nesting.
+      */
+     ast_iteration_statement *nesting_ast = state->loop_nesting_ast;
+
+     state->loop_nesting_ast = this;
+
+     /* Likewise, indicate that following code is closest to a loop,
+      * NOT closest to a switch.
+      */
+     bool saved_is_switch_innermost = state->switch_state.is_switch_innermost;
+     state->switch_state.is_switch_innermost = false;
+
+     if (mode != ast_do_while)
+	condition_to_hir(stmt, state);
+
+     if (body != NULL)
+	body->hir(& stmt->body_instructions, state);
+
+     if (rest_expression != NULL)
+	rest_expression->hir(& stmt->body_instructions, state);
+
+     if (mode == ast_do_while)
+	condition_to_hir(stmt, state);
+
+     if (mode != ast_do_while)
+	state->symbols->pop_scope();
+
+     /* Restore previous nesting before returning.
+      */
+     state->loop_nesting_ast = nesting_ast;
+     state->switch_state.is_switch_innermost = saved_is_switch_innermost;
 
    /* Loops do not have r-values.
     */

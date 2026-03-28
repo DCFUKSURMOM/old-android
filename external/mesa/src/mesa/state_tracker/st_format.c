@@ -47,106 +47,6 @@
 #include "st_format.h"
 
 
-static GLuint
-format_max_bits(enum pipe_format format)
-{
-   GLuint size = util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, 0);
-
-   size = MAX2(size, util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, 1));
-   size = MAX2(size, util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, 2));
-   size = MAX2(size, util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, 3));
-   size = MAX2(size, util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_ZS, 0));
-   size = MAX2(size, util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_ZS, 1));
-   return size;
-}
-
-
-/**
- * Return basic GL datatype for the given gallium format.
- */
-GLenum
-st_format_datatype(enum pipe_format format)
-{
-   const struct util_format_description *desc;
-   int i;
-
-   desc = util_format_description(format);
-   assert(desc);
-
-   /* Find the first non-VOID channel. */
-   for (i = 0; i < 4; i++) {
-       if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID) {
-           break;
-       }
-   }
-
-   if (desc->layout == UTIL_FORMAT_LAYOUT_PLAIN) {
-      if (format == PIPE_FORMAT_B5G5R5A1_UNORM ||
-          format == PIPE_FORMAT_B5G6R5_UNORM) {
-         return GL_UNSIGNED_SHORT;
-      }
-      else if (format == PIPE_FORMAT_R11G11B10_FLOAT ||
-               format == PIPE_FORMAT_R9G9B9E5_FLOAT) {
-         return GL_FLOAT;
-      }
-      else if (format == PIPE_FORMAT_Z24_UNORM_S8_UINT ||
-               format == PIPE_FORMAT_S8_UINT_Z24_UNORM ||
-               format == PIPE_FORMAT_Z24X8_UNORM ||
-               format == PIPE_FORMAT_X8Z24_UNORM) {
-         return GL_UNSIGNED_INT_24_8;
-      }
-      else if (format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) {
-         return GL_FLOAT_32_UNSIGNED_INT_24_8_REV;
-      }
-      else {
-         const GLuint size = format_max_bits(format);
-
-         assert(i < 4);
-         if (i == 4)
-            return GL_NONE;
-
-         if (size == 8) {
-            if (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED)
-               return GL_UNSIGNED_BYTE;
-            else
-               return GL_BYTE;
-         }
-         else if (size == 16) {
-            if (desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT)
-               return GL_HALF_FLOAT;
-            if (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED)
-               return GL_UNSIGNED_SHORT;
-            else
-               return GL_SHORT;
-         }
-         else if (size <= 32) {
-            if (desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT)
-               return GL_FLOAT;
-            if (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED)
-               return GL_UNSIGNED_INT;
-            else
-               return GL_INT;
-         }
-         else {
-            assert(size == 64);
-            assert(desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT);
-            return GL_DOUBLE;
-         }
-      }
-   }
-   else if (format == PIPE_FORMAT_UYVY) {
-      return GL_UNSIGNED_SHORT;
-   }
-   else if (format == PIPE_FORMAT_YUYV) {
-      return GL_UNSIGNED_SHORT;
-   }
-   else {
-      /* probably a compressed format, unsupported anyway */
-      return GL_NONE;
-   }
-}
-
-
 /**
  * Translate Mesa format to Gallium format.
  */
@@ -162,6 +62,10 @@ st_mesa_format_to_pipe_format(gl_format mesaFormat)
       return PIPE_FORMAT_B8G8R8A8_UNORM;
    case MESA_FORMAT_ARGB8888_REV:
       return PIPE_FORMAT_A8R8G8B8_UNORM;
+   case MESA_FORMAT_RGBX8888:
+      return PIPE_FORMAT_X8B8G8R8_UNORM;
+   case MESA_FORMAT_RGBX8888_REV:
+      return PIPE_FORMAT_R8G8B8X8_UNORM;
    case MESA_FORMAT_XRGB8888:
       return PIPE_FORMAT_B8G8R8X8_UNORM;
    case MESA_FORMAT_XRGB8888_REV:
@@ -283,7 +187,7 @@ st_mesa_format_to_pipe_format(gl_format mesaFormat)
       return PIPE_FORMAT_R8_UNORM;
    case MESA_FORMAT_R16:
       return PIPE_FORMAT_R16_UNORM;
-   case MESA_FORMAT_RG88:
+   case MESA_FORMAT_GR88:
       return PIPE_FORMAT_R8G8_UNORM;
    case MESA_FORMAT_RG1616:
       return PIPE_FORMAT_R16G16_UNORM;
@@ -416,6 +320,9 @@ st_mesa_format_to_pipe_format(gl_format mesaFormat)
    case MESA_FORMAT_SIGNED_LA_LATC2:
       return PIPE_FORMAT_LATC2_SNORM;
 
+   case MESA_FORMAT_ETC1_RGB8:
+      return PIPE_FORMAT_ETC1_RGB8;
+
    /* signed normalized formats */
    case MESA_FORMAT_SIGNED_R8:
       return PIPE_FORMAT_R8_SNORM;
@@ -453,7 +360,8 @@ st_mesa_format_to_pipe_format(gl_format mesaFormat)
       return PIPE_FORMAT_R9G9B9E5_FLOAT;
    case MESA_FORMAT_R11_G11_B10_FLOAT:
       return PIPE_FORMAT_R11G11B10_FLOAT;
-
+   case MESA_FORMAT_ARGB2101010_UINT:
+      return PIPE_FORMAT_B10G10R10A2_UINT;
    default:
       assert(0);
       return PIPE_FORMAT_NONE;
@@ -476,6 +384,10 @@ st_pipe_format_to_mesa_format(enum pipe_format format)
       return MESA_FORMAT_ARGB8888;
    case PIPE_FORMAT_A8R8G8B8_UNORM:
       return MESA_FORMAT_ARGB8888_REV;
+   case PIPE_FORMAT_X8B8G8R8_UNORM:
+      return MESA_FORMAT_RGBX8888;
+   case PIPE_FORMAT_R8G8B8X8_UNORM:
+      return MESA_FORMAT_RGBX8888_REV;
    case PIPE_FORMAT_B8G8R8X8_UNORM:
       return MESA_FORMAT_XRGB8888;
    case PIPE_FORMAT_X8R8G8B8_UNORM:
@@ -607,7 +519,7 @@ st_pipe_format_to_mesa_format(enum pipe_format format)
    case PIPE_FORMAT_R16_UNORM:
       return MESA_FORMAT_R16;
    case PIPE_FORMAT_R8G8_UNORM:
-      return MESA_FORMAT_RG88;
+      return MESA_FORMAT_GR88;
    case PIPE_FORMAT_R16G16_UNORM:
       return MESA_FORMAT_RG1616;
 
@@ -736,6 +648,9 @@ st_pipe_format_to_mesa_format(enum pipe_format format)
    case PIPE_FORMAT_LATC2_SNORM:
       return MESA_FORMAT_SIGNED_LA_LATC2;
 
+   case PIPE_FORMAT_ETC1_RGB8:
+      return MESA_FORMAT_ETC1_RGB8;
+
    /* signed normalized formats */
    case PIPE_FORMAT_R8_SNORM:
       return MESA_FORMAT_SIGNED_R8;
@@ -774,6 +689,8 @@ st_pipe_format_to_mesa_format(enum pipe_format format)
    case PIPE_FORMAT_R11G11B10_FLOAT:
       return MESA_FORMAT_R11_G11_B10_FLOAT;
 
+   case PIPE_FORMAT_B10G10R10A2_UINT:
+      return MESA_FORMAT_ARGB2101010_UINT;
    default:
       assert(0);
       return MESA_FORMAT_NONE;
@@ -1178,6 +1095,12 @@ static const struct format_mapping format_map[] = {
       { PIPE_FORMAT_LATC2_SNORM, 0 }
    },
 
+   /* ETC1 */
+   {
+      { GL_ETC1_RGB8_OES, 0 },
+      { PIPE_FORMAT_ETC1_RGB8, 0 }
+   },
+
    /* signed/unsigned integer formats.
     */
    {
@@ -1463,7 +1386,11 @@ static const struct format_mapping format_map[] = {
    {
       { GL_R11F_G11F_B10F, 0 },
       { PIPE_FORMAT_R11G11B10_FLOAT, 0 }
-   }
+   },
+   {
+      { GL_RGB10_A2UI, 0 },
+      { PIPE_FORMAT_B10G10R10A2_UINT, 0 }
+   },
 };
 
 

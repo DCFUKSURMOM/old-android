@@ -189,8 +189,15 @@ _swrast_map_teximage(struct gl_context *ctx,
    stride = _mesa_format_row_stride(texImage->TexFormat, texImage->Width);
    _mesa_get_format_block_size(texImage->TexFormat, &bw, &bh);
 
-   assert(swImage->Buffer);
+   assert(x % bw == 0);
+   assert(y % bh == 0);
 
+   if (!swImage->Buffer) {
+      /* probably ran out of memory when allocating tex mem */
+      *mapOut = NULL;
+      return;
+   }
+      
    map = swImage->Buffer;
 
    if (texImage->TexObject->Target == GL_TEXTURE_3D ||
@@ -240,8 +247,7 @@ _swrast_map_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
                swrast_texture_image(texImage);
 
             /* XXX we'll eventually call _swrast_map_teximage() here */
-            swImage->Data = swImage->Buffer;
-            assert(swImage->Buffer);
+            swImage->Map = swImage->Buffer;
          }
       }
    }
@@ -262,7 +268,7 @@ _swrast_unmap_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
                = swrast_texture_image(texImage);
 
             /* XXX we'll eventually call _swrast_unmap_teximage() here */
-            swImage->Data = NULL;
+            swImage->Map = NULL;
          }
       }
    }
@@ -307,59 +313,6 @@ _swrast_unmap_textures(struct gl_context *ctx)
       enabledUnits &= ~(1 << unit);
    }
 }
-
-
-/**
- * Map or unmap any textures that we may be rendering to as renderbuffers.
- */
-static void
-map_unmap_renderbuffers(struct gl_context *ctx,
-                        struct gl_framebuffer *fb,
-                        GLboolean map)
-{
-   GLuint i;
-
-   for (i = 0; i < Elements(fb->Attachment); i++) {
-      struct gl_texture_object *texObj = fb->Attachment[i].Texture;
-      if (texObj) {
-         const GLuint level = fb->Attachment[i].TextureLevel;
-         const GLuint face = fb->Attachment[i].CubeMapFace;
-         struct gl_texture_image *texImage = texObj->Image[face][level];
-         if (texImage) {
-            struct swrast_texture_image *swImage
-               = swrast_texture_image(texImage);
-
-            if (map) {
-               /* XXX we'll eventually call _swrast_map_teximage() here */
-               swImage->Data = swImage->Buffer;
-            }
-            else {
-               /* XXX we'll eventually call _swrast_unmap_teximage() here */
-               swImage->Data = NULL;
-            }
-         }
-      }
-   }
-}
-
-
-void
-_swrast_map_renderbuffers(struct gl_context *ctx)
-{
-   map_unmap_renderbuffers(ctx, ctx->DrawBuffer, GL_TRUE);
-   if (ctx->ReadBuffer != ctx->DrawBuffer)
-      map_unmap_renderbuffers(ctx, ctx->ReadBuffer, GL_TRUE);
-}
-
-
-void
-_swrast_unmap_renderbuffers(struct gl_context *ctx)
-{
-   map_unmap_renderbuffers(ctx, ctx->DrawBuffer, GL_FALSE);
-   if (ctx->ReadBuffer != ctx->DrawBuffer)
-      map_unmap_renderbuffers(ctx, ctx->ReadBuffer, GL_FALSE);
-}
-
 
 
 /**

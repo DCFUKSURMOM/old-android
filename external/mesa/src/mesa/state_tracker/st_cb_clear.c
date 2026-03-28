@@ -34,12 +34,12 @@
   */
 
 #include "main/glheader.h"
+#include "main/accum.h"
 #include "main/formats.h"
 #include "main/macros.h"
 #include "program/prog_instruction.h"
 #include "st_context.h"
 #include "st_atom.h"
-#include "st_cb_accum.h"
 #include "st_cb_clear.h"
 #include "st_cb_fbo.h"
 #include "st_format.h"
@@ -68,6 +68,7 @@ st_init_clear(struct st_context *st)
    memset(&st->clear, 0, sizeof(st->clear));
 
    st->clear.raster.gl_rasterization_rules = 1;
+   st->clear.raster.depth_clip = 1;
    st->clear.enable_ds_separate = pscreen->get_param(pscreen, PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE);
 }
 
@@ -165,6 +166,11 @@ draw_quad(struct st_context *st,
                                           max_slots * sizeof(st->clear.vertices));
    }
 
+   if (!st->clear.vbuf) {
+      /* ran out of memory */
+      return;
+   }
+
    /* positions */
    st->clear.vertices[0][0][0] = x0;
    st->clear.vertices[0][0][1] = y0;
@@ -243,8 +249,8 @@ clear_with_quad(struct gl_context *ctx,
    cso_save_depth_stencil_alpha(st->cso_context);
    cso_save_rasterizer(st->cso_context);
    cso_save_viewport(st->cso_context);
-   cso_save_clip(st->cso_context);
    cso_save_fragment_shader(st->cso_context);
+   cso_save_stream_outputs(st->cso_context);
    cso_save_vertex_shader(st->cso_context);
    cso_save_geometry_shader(st->cso_context);
    cso_save_vertex_elements(st->cso_context);
@@ -301,6 +307,7 @@ clear_with_quad(struct gl_context *ctx,
    }
 
    cso_set_vertex_elements(st->cso_context, 2, st->velems_util_draw);
+   cso_set_stream_outputs(st->cso_context, 0, NULL, 0);
 
    cso_set_rasterizer(st->cso_context, &st->clear.raster);
 
@@ -319,7 +326,6 @@ clear_with_quad(struct gl_context *ctx,
       cso_set_viewport(st->cso_context, &vp);
    }
 
-   cso_set_clip(st->cso_context, &st->clear.clip);
    set_fragment_shader(st);
    set_vertex_shader(st);
    cso_set_geometry_shader_handle(st->cso_context, NULL);
@@ -339,12 +345,12 @@ clear_with_quad(struct gl_context *ctx,
    cso_restore_depth_stencil_alpha(st->cso_context);
    cso_restore_rasterizer(st->cso_context);
    cso_restore_viewport(st->cso_context);
-   cso_restore_clip(st->cso_context);
    cso_restore_fragment_shader(st->cso_context);
    cso_restore_vertex_shader(st->cso_context);
    cso_restore_geometry_shader(st->cso_context);
    cso_restore_vertex_elements(st->cso_context);
    cso_restore_vertex_buffers(st->cso_context);
+   cso_restore_stream_outputs(st->cso_context);
 }
 
 
@@ -594,8 +600,7 @@ st_Clear(struct gl_context *ctx, GLbitfield mask)
                       ctx->Depth.Clear, ctx->Stencil.Clear);
    }
    if (mask & BUFFER_BIT_ACCUM)
-      st_clear_accum_buffer(ctx,
-                            ctx->DrawBuffer->Attachment[BUFFER_ACCUM].Renderbuffer);
+      _mesa_clear_accum_buffer(ctx);
 }
 
 

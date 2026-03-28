@@ -38,6 +38,7 @@
 #include "main/mtypes.h"
 #include "main/pack.h"
 #include "main/pbo.h"
+#include "main/readpix.h"
 #include "main/texformat.h"
 #include "main/teximage.h"
 #include "main/texstore.h"
@@ -516,7 +517,6 @@ make_texture(struct st_context *st,
       success = _mesa_texstore(ctx, 2,           /* dims */
                                baseInternalFormat, /* baseInternalFormat */
                                mformat,          /* gl_format */
-                               0, 0, 0,          /* dstX/Y/Zoffset */
                                transfer->stride, /* dstRowStride, bytes */
                                &dest,            /* destSlices */
                                width, height, 1, /* size */
@@ -670,6 +670,7 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    cso_save_samplers(cso);
    cso_save_fragment_sampler_views(cso);
    cso_save_fragment_shader(cso);
+   cso_save_stream_outputs(cso);
    cso_save_vertex_shader(cso);
    cso_save_geometry_shader(cso);
    cso_save_vertex_elements(cso);
@@ -685,6 +686,7 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
       memset(&rasterizer, 0, sizeof(rasterizer));
       rasterizer.clamp_fragment_color = ctx->Color._ClampFragmentColor;
       rasterizer.gl_rasterization_rules = 1;
+      rasterizer.depth_clip = !ctx->Transform.DepthClamp;
       rasterizer.scissor = ctx->Scissor.Enabled;
       cso_set_rasterizer(cso, &rasterizer);
    }
@@ -760,6 +762,7 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    }
 
    cso_set_vertex_elements(cso, 3, st->velems_util_draw);
+   cso_set_stream_outputs(st->cso_context, 0, NULL, 0);
 
    /* texture state: */
    cso_set_fragment_sampler_views(cso, num_sampler_view, sv);
@@ -795,6 +798,7 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    cso_restore_geometry_shader(cso);
    cso_restore_vertex_elements(cso);
    cso_restore_vertex_buffers(cso);
+   cso_restore_stream_outputs(cso);
    if (write_stencil) {
       cso_restore_depth_stencil_alpha(cso);
       cso_restore_blend(cso);
@@ -1135,10 +1139,10 @@ st_DrawPixels(struct gl_context *ctx, GLint x, GLint y,
                   assert(0);
                }
 
-	       sv[1] = st_create_texture_sampler_view_format(st->pipe, pt,
+               sv[1] = st_create_texture_sampler_view_format(st->pipe, pt,
                                                              stencil_format);
-	       num_sampler_view++;
-	    }
+               num_sampler_view++;
+            }
 
             draw_textured_quad(ctx, x, y, ctx->Current.RasterPos[2],
                                width, height,
@@ -1181,17 +1185,14 @@ copy_stencil_pixels(struct gl_context *ctx, GLint srcx, GLint srcy,
       return;
    }
 
-   /* Get the dest renderbuffer.  If there's a wrapper, use the
-    * underlying renderbuffer.
-    */
-   rbDraw = st_renderbuffer(ctx->DrawBuffer->_StencilBuffer);
-   if (rbDraw->Base.Wrapped)
-      rbDraw = st_renderbuffer(rbDraw->Base.Wrapped);
+   /* Get the dest renderbuffer */
+   rbDraw = st_renderbuffer(ctx->DrawBuffer->
+                            Attachment[BUFFER_STENCIL].Renderbuffer);
 
    /* this will do stencil pixel transfer ops */
-   st_read_stencil_pixels(ctx, srcx, srcy, width, height,
-                          GL_STENCIL_INDEX, GL_UNSIGNED_BYTE,
-                          &ctx->DefaultPacking, buffer);
+   _mesa_readpixels(ctx, srcx, srcy, width, height,
+                    GL_STENCIL_INDEX, GL_UNSIGNED_BYTE,
+                    &ctx->DefaultPacking, buffer);
 
    if (0) {
       /* debug code: dump stencil values */
@@ -1293,6 +1294,20 @@ copy_stencil_pixels(struct gl_context *ctx, GLint srcx, GLint srcy,
    /* unmap the stencil buffer */
    pipe_transfer_unmap(pipe, ptDraw);
    pipe->transfer_destroy(pipe, ptDraw);
+}
+
+
+/**
+ * Return renderbuffer to use for reading color pixels for glCopyPixels
+ */
+static struct st_renderbuffer *
+st_get_color_read_renderbuffer(struct gl_context *ctx)
+{
+   struct gl_framebuffer *fb = ctx->ReadBuffer;
+   struct st_renderbuffer *strb =
+      st_renderbuffer(fb->_ColorReadBuffer);
+
+   return strb;
 }
 
 
@@ -1426,6 +1441,13 @@ st_CopyPixels(struct gl_context *ctx, GLint srcx, GLint srcy,
 
    st_validate_state(st);
 
+   if (type == GL_DEPTH_STENCIL) {
+      /* XXX make this more efficient */
+      st_CopyPixels(ctx, srcx, srcy, width, height, dstx, dsty, GL_STENCIL);
+      st_CopyPixels(ctx, srcx, srcy, width, height, dstx, dsty, GL_DEPTH);
+      return;
+   }
+
    if (type == GL_STENCIL) {
       /* can't use texturing to do stencil */
       copy_stencil_pixels(ctx, srcx, srcy, width, height, dstx, dsty);
@@ -1462,7 +1484,8 @@ st_CopyPixels(struct gl_context *ctx, GLint srcx, GLint srcy,
    }
    else {
       assert(type == GL_DEPTH);
-      rbRead = st_renderbuffer(ctx->ReadBuffer->_DepthBuffer);
+      rbRead = st_renderbuffer(ctx->ReadBuffer->
+                               Attachment[BUFFER_DEPTH].Renderbuffer);
       color = ctx->Current.Attrib[VERT_ATTRIB_COLOR0];
 
       fpv = get_depth_stencil_fp_variant(st, GL_TRUE, GL_FALSE);
@@ -1473,10 +1496,6 @@ st_CopyPixels(struct gl_context *ctx, GLint srcx, GLint srcy,
 
    /* update fragment program constants */
    st_upload_constants(st, fpv->parameters, PIPE_SHADER_FRAGMENT);
-
-
-   if (rbRead->Base.Wrapped)
-      rbRead = st_renderbuffer(rbRead->Base.Wrapped);
 
    sample_count = rbRead->texture->nr_samples;
    /* I believe this would be legal, presumably would need to do a resolve
@@ -1638,9 +1657,9 @@ st_destroy_drawpix(struct st_context *st)
 
    st_reference_fragprog(st, &st->pixel_xfer.combined_prog, NULL);
    if (st->drawpix.vert_shaders[0])
-      ureg_free_tokens(st->drawpix.vert_shaders[0]);
+      cso_delete_vertex_shader(st->cso_context, st->drawpix.vert_shaders[0]);
    if (st->drawpix.vert_shaders[1])
-      ureg_free_tokens(st->drawpix.vert_shaders[1]);
+      cso_delete_vertex_shader(st->cso_context, st->drawpix.vert_shaders[1]);
 }
 
 #endif /* FEATURE_drawpix */

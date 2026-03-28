@@ -210,6 +210,16 @@ public:
       this->reg = reg;
    }
 
+   dst_reg(register_file file, int reg, const glsl_type *type, int writemask)
+   {
+      init();
+
+      this->file = file;
+      this->reg = reg;
+      this->type = brw_type_for_base_type(type);
+      this->writemask = writemask;
+   }
+
    dst_reg(struct brw_reg reg)
    {
       init();
@@ -261,6 +271,7 @@ public:
    int conditional_mod; /**< BRW_CONDITIONAL_* */
 
    int sampler;
+   uint32_t texture_offset; /**< Texture Offset bitfield */
    int target; /**< MRT target. */
    bool shadow_compare;
 
@@ -276,6 +287,7 @@ public:
    ir_instruction *ir;
    const char *annotation;
 
+   bool is_tex();
    bool is_math();
 };
 
@@ -322,6 +334,7 @@ public:
    int virtual_grf_count;
    int virtual_grf_array_size;
    int first_non_payload_grf;
+   unsigned int max_grf;
    int *virtual_grf_def;
    int *virtual_grf_use;
    dst_reg userplane[MAX_CLIP_PLANES];
@@ -485,6 +498,8 @@ public:
    void emit_math2_gen4(enum opcode opcode, dst_reg dst, src_reg src0, src_reg src1);
    void emit_math(enum opcode opcode, dst_reg dst, src_reg src0, src_reg src1);
 
+   void swizzle_result(ir_texture *ir, src_reg orig_val, int sampler);
+
    void emit_ndc_computation();
    void emit_psiz_and_flags(struct brw_reg reg);
    void emit_clip_distances(struct brw_reg reg, int offset);
@@ -533,6 +548,14 @@ public:
 			    struct brw_reg dst,
 			    struct brw_reg src0,
 			    struct brw_reg src1);
+   void generate_math2_gen7(vec4_instruction *inst,
+			    struct brw_reg dst,
+			    struct brw_reg src0,
+			    struct brw_reg src1);
+
+   void generate_tex(vec4_instruction *inst,
+		     struct brw_reg dst,
+		     struct brw_reg src);
 
    void generate_urb_write(vec4_instruction *inst);
    void generate_oword_dual_block_offsets(struct brw_reg m1,

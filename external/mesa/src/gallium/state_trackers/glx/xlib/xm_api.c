@@ -863,6 +863,7 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list,
 {
    XMesaDisplay xmdpy = xmesa_init_display(v->display);
    struct st_context_attribs attribs;
+   enum st_context_error ctx_err = 0;
    XMesaContext c;
 
    if (!xmdpy)
@@ -878,7 +879,6 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list,
    c->xm_read_buffer = NULL;
 
    memset(&attribs, 0, sizeof(attribs));
-   attribs.profile = ST_PROFILE_DEFAULT;
    attribs.visual = v->stvis;
    attribs.major = major;
    attribs.minor = minor;
@@ -888,13 +888,26 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list,
       attribs.flags |= ST_CONTEXT_FLAG_DEBUG;
    if (contextFlags & GLX_CONTEXT_ROBUST_ACCESS_BIT_ARB)
       attribs.flags |= ST_CONTEXT_FLAG_ROBUST_ACCESS;
-   if (profileMask & GLX_CONTEXT_CORE_PROFILE_BIT_ARB)
-      attribs.flags |= ST_CONTEXT_FLAG_CORE_PROFILE;
-   if (profileMask & GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB)
-      attribs.flags |= ST_CONTEXT_FLAG_COMPATIBLE_PROFILE;
 
-   c->st = stapi->create_context(stapi, xmdpy->smapi,
-         &attribs, (share_list) ? share_list->st : NULL);
+   /* There are no profiles before OpenGL 3.2.  The
+    * GLX_ARB_create_context_profile spec says:
+    *
+    *     "If the requested OpenGL version is less than 3.2,
+    *     GLX_CONTEXT_PROFILE_MASK_ARB is ignored and the functionality of the
+    *     context is determined solely by the requested version."
+    *
+    * The spec also says:
+    *
+    *     "The default value for GLX_CONTEXT_PROFILE_MASK_ARB is
+    *     GLX_CONTEXT_CORE_PROFILE_BIT_ARB."
+    */
+   attribs.profile = ST_PROFILE_DEFAULT;
+   if ((major > 3 || (major == 3 && minor >= 2))
+       && ((profileMask & GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB) == 0))
+      attribs.profile = ST_PROFILE_OPENGL_CORE;
+
+   c->st = stapi->create_context(stapi, xmdpy->smapi, &attribs,
+         &ctx_err, (share_list) ? share_list->st : NULL);
    if (c->st == NULL)
       goto fail;
 

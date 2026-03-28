@@ -720,11 +720,12 @@ static EGLBoolean
 GLX_eglDestroyContext(_EGLDriver *drv, _EGLDisplay *disp, _EGLContext *ctx)
 {
    struct GLX_egl_driver *GLX_drv = GLX_egl_driver(drv);
+   struct GLX_egl_display *GLX_dpy = GLX_egl_display(disp);
    struct GLX_egl_context *GLX_ctx = GLX_egl_context(ctx);
 
    if (_eglPutContext(ctx)) {
       assert(GLX_ctx);
-      GLX_drv->glXDestroyContext(disp, ctx);
+      GLX_drv->glXDestroyContext(GLX_dpy->dpy, GLX_ctx->context);
 
       free(GLX_ctx);
    }
@@ -1069,17 +1070,22 @@ static EGLBoolean
 GLX_Load(_EGLDriver *drv)
 {
    struct GLX_egl_driver *GLX_drv = GLX_egl_driver(drv);
-   void *handle;
+   void *handle = NULL;
 
-   handle = dlopen("libGL.so", RTLD_LAZY | RTLD_LOCAL);
-   if (!handle)
-      goto fail;
+   GLX_drv->glXGetProcAddress = dlsym(RTLD_DEFAULT, "glXGetProcAddress");
+   if (!GLX_drv->glXGetProcAddress)
+      GLX_drv->glXGetProcAddress = dlsym(RTLD_DEFAULT, "glXGetProcAddressARB");
+   if (!GLX_drv->glXGetProcAddress) {
+      handle = dlopen("libGL.so", RTLD_LAZY | RTLD_LOCAL);
+      if (!handle)
+         goto fail;
 
-   GLX_drv->glXGetProcAddress = dlsym(handle, "glXGetProcAddress");
-   if (!GLX_drv->glXGetProcAddress)
-      GLX_drv->glXGetProcAddress = dlsym(handle, "glXGetProcAddressARB");
-   if (!GLX_drv->glXGetProcAddress)
-      goto fail;
+      GLX_drv->glXGetProcAddress = dlsym(handle, "glXGetProcAddress");
+      if (!GLX_drv->glXGetProcAddress)
+         GLX_drv->glXGetProcAddress = dlsym(handle, "glXGetProcAddressARB");
+      if (!GLX_drv->glXGetProcAddress)
+         goto fail;
+   }
 
 #define GET_PROC(proc_type, proc_name, check)                        \
    do {                                                              \

@@ -28,21 +28,24 @@
 
 #include <string.h>
 #include <assert.h>
+#include "main/mtypes.h" /* for gl_texture_index, C++'s enum rules are broken */
 
+#ifdef __cplusplus
 extern "C" {
-#include "GL/gl.h"
-}
-
-#include "ralloc.h"
+#endif
 
 struct _mesa_glsl_parse_state;
 struct glsl_symbol_table;
 
-extern "C" void
+extern void
 _mesa_glsl_initialize_types(struct _mesa_glsl_parse_state *state);
 
-extern "C" void
+extern void
 _mesa_glsl_release_types(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 enum glsl_base_type {
    GLSL_TYPE_UINT = 0,
@@ -66,6 +69,9 @@ enum glsl_sampler_dim {
    GLSL_SAMPLER_DIM_EXTERNAL
 };
 
+#ifdef __cplusplus
+#include "GL/gl.h"
+#include "ralloc.h"
 
 struct glsl_type {
    GLenum gl_type;
@@ -349,6 +355,11 @@ struct glsl_type {
    bool contains_sampler() const;
 
    /**
+    * Get the Mesa texture target index for a sampler type.
+    */
+   gl_texture_index sampler_index() const;
+
+   /**
     * Query whether or not a type is an array
     */
    bool is_array() const
@@ -529,5 +540,7 @@ struct glsl_struct_field {
    const struct glsl_type *type;
    const char *name;
 };
+
+#endif /* __cplusplus */
 
 #endif /* GLSL_TYPES_H */

@@ -71,8 +71,6 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
    struct draw_llvm_variant_key *key;
    struct draw_llvm_variant *variant = NULL;
    struct draw_llvm_variant_list_item *li;
-   unsigned i;
-   unsigned instance_id_index = ~0;
    const unsigned out_prim = (draw->gs.geometry_shader ? 
                               draw->gs.geometry_shader->output_primitive :
                               in_prim);
@@ -82,16 +80,6 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
     */
    const unsigned nr = MAX2( shader->base.info.num_inputs,
                              shader->base.info.num_outputs + 1 );
-
-   /* Scan for instanceID system value.
-    * XXX but we never use instance_id_index?!
-    */
-   for (i = 0; i < shader->base.info.num_inputs; i++) {
-      if (shader->base.info.input_semantic_name[i] == TGSI_SEMANTIC_INSTANCEID) {
-         instance_id_index = i;
-         break;
-      }
-   }
 
    fpme->input_prim = in_prim;
    fpme->opt = opt;
@@ -160,8 +148,13 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
           * XXX: should we flush here ?
           */
          for (i = 0; i < DRAW_MAX_SHADER_VARIANTS / 4; i++) {
-            struct draw_llvm_variant_list_item *item =
-               last_elem(&fpme->llvm->vs_variants_list);
+            struct draw_llvm_variant_list_item *item;
+            if (is_empty_list(&fpme->llvm->vs_variants_list)) {
+               break;
+            }
+            item = last_elem(&fpme->llvm->vs_variants_list);
+            assert(item);
+            assert(item->base);
             draw_llvm_destroy_variant(item->base);
          }
       }

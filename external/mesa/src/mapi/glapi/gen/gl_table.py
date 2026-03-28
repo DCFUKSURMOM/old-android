@@ -92,7 +92,11 @@ class PrintRemapTable(gl_XML.gl_print_base):
  * named function in the specified dispatch table.
  */
 
+/* GLXEXT is defined when building the GLX extension in the xserver.
+ */
+#if !defined(GLXEXT)
 #include "main/mfeatures.h"
+#endif
 """
 		return
 
@@ -179,11 +183,11 @@ class PrintRemapTable(gl_XML.gl_print_base):
 			print 'typedef %s (GLAPIENTRYP _glptr_%s)(%s);' % (f.return_type, f.name, arg_string)
 			print '#define CALL_%s(disp, parameters) \\' % (f.name)
 			print '    (* GET_%s(disp)) parameters' % (f.name)
-			print 'static INLINE _glptr_%s GET_%s(struct _glapi_table *disp) {' % (f.name, f.name)
+			print 'static inline _glptr_%s GET_%s(struct _glapi_table *disp) {' % (f.name, f.name)
 			print '   return (_glptr_%s) (GET_by_offset(disp, _gloffset_%s));' % (f.name, f.name)
 			print '}'
 			print
-			print 'static INLINE void SET_%s(struct _glapi_table *disp, %s (GLAPIENTRYP fn)(%s)) {' % (f.name, f.return_type, arg_string)
+			print 'static inline void SET_%s(struct _glapi_table *disp, %s (GLAPIENTRYP fn)(%s)) {' % (f.name, f.return_type, arg_string)
 			print '   SET_by_offset(disp, _gloffset_%s, fn);' % (f.name)
 			print '}'
 			print

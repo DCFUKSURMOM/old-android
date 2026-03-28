@@ -39,6 +39,7 @@
 #include "formats.h"
 #include "framebuffer.h"
 #include "hash.h"
+#include "image.h"
 #include "macros.h"
 #include "mfeatures.h"
 #include "mtypes.h"
@@ -76,14 +77,6 @@ static struct gl_renderbuffer DummyRenderbuffer;
 /* We bind this framebuffer when applications pass a NULL
  * drawable/surface in make current. */
 static struct gl_framebuffer IncompleteFramebuffer;
-
-
-static inline GLboolean
-is_cube_face(GLenum target)
-{
-   return (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
-           target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z);
-}
 
 
 /**
@@ -826,7 +819,7 @@ _mesa_test_framebuffer_completeness(struct gl_context *ctx,
                fbo_incomplete("width or height mismatch", -1);
                return;
             }
-            /* check that all color buffer have same format */
+            /* check that all color buffers are the same format */
             if (intFormat != GL_NONE && f != intFormat) {
                fb->_Status = GL_FRAMEBUFFER_INCOMPLETE_FORMATS_EXT;
                fbo_incomplete("format mismatch", -1);
@@ -838,8 +831,7 @@ _mesa_test_framebuffer_completeness(struct gl_context *ctx,
             fb->_Status = GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
             fbo_incomplete("inconsistant number of samples", i);
             return;
-         }            
-
+         }
       }
    }
 
@@ -1280,7 +1272,7 @@ _mesa_base_fbo_format(struct gl_context *ctx, GLenum internalFormat)
    case GL_RG32I:
       return ctx->Extensions.ARB_texture_rg &&
              ctx->Extensions.EXT_texture_integer ? GL_RG : 0;
-      
+
    case GL_INTENSITY8I_EXT:
    case GL_INTENSITY8UI_EXT:
    case GL_INTENSITY16I_EXT:
@@ -1307,6 +1299,9 @@ _mesa_base_fbo_format(struct gl_context *ctx, GLenum internalFormat)
    case GL_LUMINANCE_ALPHA32UI_EXT:
       return ctx->Extensions.EXT_texture_integer &&
              ctx->Extensions.ARB_framebuffer_object ? GL_LUMINANCE_ALPHA : 0;
+
+   case GL_RGB10_A2UI:
+      return ctx->Extensions.ARB_texture_rgb10_a2ui ? GL_RGBA : 0;
    default:
       return 0;
    }
@@ -1400,7 +1395,8 @@ renderbuffer_storage(GLenum target, GLenum internalFormat,
 
    if (rb->InternalFormat == internalFormat &&
        rb->Width == (GLuint) width &&
-       rb->Height == (GLuint) height) {
+       rb->Height == (GLuint) height &&
+       rb->NumSamples == samples) {
       /* no change in allocation needed */
       return;
    }
@@ -1482,48 +1478,10 @@ _mesa_EGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image)
 static GLint
 get_component_bits(GLenum pname, GLenum baseFormat, gl_format format)
 {
-   switch (pname) {
-   case GL_RENDERBUFFER_RED_SIZE_EXT:
-   case GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE:
-      if (baseFormat == GL_RGB || baseFormat == GL_RGBA ||
-	  baseFormat == GL_RG || baseFormat == GL_RED)
-         return _mesa_get_format_bits(format, pname);
-      else
-         return 0;
-   case GL_RENDERBUFFER_GREEN_SIZE_EXT:
-   case GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE:
-      if (baseFormat == GL_RGB || baseFormat == GL_RGBA || baseFormat == GL_RG)
-         return _mesa_get_format_bits(format, pname);
-      else
-         return 0;
-   case GL_RENDERBUFFER_BLUE_SIZE_EXT:
-   case GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE:
-      if (baseFormat == GL_RGB || baseFormat == GL_RGBA)
-         return _mesa_get_format_bits(format, pname);
-      else
-         return 0;
-   case GL_RENDERBUFFER_ALPHA_SIZE_EXT:
-   case GL_FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE:
-      if (baseFormat == GL_RGBA || baseFormat == GL_ALPHA ||
-	  baseFormat == GL_LUMINANCE_ALPHA)
-         return _mesa_get_format_bits(format, pname);
-      else
-         return 0;
-   case GL_RENDERBUFFER_DEPTH_SIZE_EXT:
-   case GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE:
-      if (baseFormat == GL_DEPTH_COMPONENT || baseFormat == GL_DEPTH_STENCIL)
-         return _mesa_get_format_bits(format, pname);
-      else
-         return 0;
-   case GL_RENDERBUFFER_STENCIL_SIZE_EXT:
-   case GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE:
-      if (baseFormat == GL_STENCIL_INDEX || baseFormat == GL_DEPTH_STENCIL)
-         return _mesa_get_format_bits(format, pname);
-      else
-         return 0;
-   default:
+   if (_mesa_base_format_has_channel(baseFormat, pname))
+      return _mesa_get_format_bits(format, pname);
+   else
       return 0;
-   }
 }
 
 
@@ -1862,7 +1820,7 @@ _mesa_DeleteFramebuffersEXT(GLsizei n, const GLuint *framebuffers)
                   /* bind default */
                   ASSERT(fb->RefCount >= 2);
                   _mesa_BindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
-               }    
+               }
             }
 
 	    /* remove from hash table immediately, to free the ID */
@@ -1940,6 +1898,30 @@ _mesa_CheckFramebufferStatusEXT(GLenum target)
 }
 
 
+/**
+ * Replicate the src attachment point. Used by framebuffer_texture() when
+ * the same texture is attached at GL_DEPTH_ATTACHMENT and
+ * GL_STENCIL_ATTACHMENT.
+ */
+static void
+reuse_framebuffer_texture_attachment(struct gl_framebuffer *fb,
+                                     gl_buffer_index dst,
+                                     gl_buffer_index src)
+{
+   struct gl_renderbuffer_attachment *dst_att = &fb->Attachment[dst];
+   struct gl_renderbuffer_attachment *src_att = &fb->Attachment[src];
+
+   assert(src_att->Texture != NULL);
+   assert(src_att->Renderbuffer != NULL);
+
+   _mesa_reference_texobj(&dst_att->Texture, src_att->Texture);
+   _mesa_reference_renderbuffer(&dst_att->Renderbuffer, src_att->Renderbuffer);
+   dst_att->Type = src_att->Type;
+   dst_att->Complete = src_att->Complete;
+   dst_att->TextureLevel = src_att->TextureLevel;
+   dst_att->Zoffset = src_att->Zoffset;
+}
+
 
 /**
  * Common code called by glFramebufferTexture1D/2D/3DEXT().
@@ -1969,7 +1951,6 @@ framebuffer_texture(struct gl_context *ctx, const char *caller, GLenum target,
       return;
    }
 
-
    /* The textarget, level, and zoffset parameters are only validated if
     * texture is non-zero.
     */
@@ -1986,7 +1967,7 @@ framebuffer_texture(struct gl_context *ctx, const char *caller, GLenum target,
          }
          else {
             err = (texObj->Target == GL_TEXTURE_CUBE_MAP)
-                ? !is_cube_face(textarget)
+                ? !_mesa_is_cube_face(textarget)
                 : (texObj->Target != textarget);
          }
       }
@@ -2022,7 +2003,7 @@ framebuffer_texture(struct gl_context *ctx, const char *caller, GLenum target,
          }
       }
 
-      if ((level < 0) || 
+      if ((level < 0) ||
           (level >= _mesa_max_texture_levels(ctx, texObj->Target))) {
          _mesa_error(ctx, GL_INVALID_VALUE,
                      "glFramebufferTexture%sEXT(level)", caller);
@@ -2041,8 +2022,34 @@ framebuffer_texture(struct gl_context *ctx, const char *caller, GLenum target,
 
    _glthread_LOCK_MUTEX(fb->Mutex);
    if (texObj) {
-      _mesa_set_texture_attachment(ctx, fb, att, texObj, textarget,
-                                   level, zoffset);
+      if (attachment == GL_DEPTH_ATTACHMENT &&
+	   texObj == fb->Attachment[BUFFER_STENCIL].Texture) {
+	 /* The texture object is already attached to the stencil attachment
+	  * point. Don't create a new renderbuffer; just reuse the stencil
+	  * attachment's. This is required to prevent a GL error in
+	  * glGetFramebufferAttachmentParameteriv(GL_DEPTH_STENCIL).
+	  */
+	 reuse_framebuffer_texture_attachment(fb, BUFFER_DEPTH,
+	                                      BUFFER_STENCIL);
+      } else if (attachment == GL_STENCIL_ATTACHMENT &&
+	         texObj == fb->Attachment[BUFFER_DEPTH].Texture) {
+	 /* As above, but with depth and stencil juxtasposed. */
+	 reuse_framebuffer_texture_attachment(fb, BUFFER_STENCIL,
+	                                      BUFFER_DEPTH);
+      } else {
+	 _mesa_set_texture_attachment(ctx, fb, att, texObj, textarget,
+				      level, zoffset);
+	 if (attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
+	    /* Above we created a new renderbuffer and attached it to the
+	     * depth attachment point. Now attach it to the stencil attachment
+	     * point too.
+	     */
+	    assert(att == &fb->Attachment[BUFFER_DEPTH]);
+	    reuse_framebuffer_texture_attachment(fb,BUFFER_STENCIL,
+	                                         BUFFER_DEPTH);
+	 }
+      }
+
       /* Set the render-to-texture flag.  We'll check this flag in
        * glTexImage() and friends to determine if we need to revalidate
        * any FBOs that might be rendering into this texture.
@@ -2055,6 +2062,10 @@ framebuffer_texture(struct gl_context *ctx, const char *caller, GLenum target,
    }
    else {
       _mesa_remove_attachment(ctx, att);
+      if (attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
+	 assert(att == &fb->Attachment[BUFFER_DEPTH]);
+	 _mesa_remove_attachment(ctx, &fb->Attachment[BUFFER_STENCIL]);
+      }
    }
 
    invalidate_framebuffer(fb);
@@ -2569,6 +2580,44 @@ find_attachment(const struct gl_framebuffer *fb,
 }
 
 
+/**
+ * Helper function for checking if the datatypes of color buffers are
+ * compatible for glBlitFramebuffer.  From the 3.1 spec, page 198:
+ *
+ * "GL_INVALID_OPERATION is generated if mask contains GL_COLOR_BUFFER_BIT
+ *  and any of the following conditions hold:
+ *   - The read buffer contains fixed-point or floating-point values and any
+ *     draw buffer contains neither fixed-point nor floating-point values.
+ *   - The read buffer contains unsigned integer values and any draw buffer
+ *     does not contain unsigned integer values.
+ *   - The read buffer contains signed integer values and any draw buffer
+ *     does not contain signed integer values."
+ */
+static GLboolean
+compatible_color_datatypes(gl_format srcFormat, gl_format dstFormat)
+{
+   GLenum srcType = _mesa_get_format_datatype(srcFormat);
+   GLenum dstType = _mesa_get_format_datatype(dstFormat);
+
+   if (srcType != GL_INT && srcType != GL_UNSIGNED_INT) {
+      assert(srcType == GL_UNSIGNED_NORMALIZED ||
+             srcType == GL_SIGNED_NORMALIZED ||
+             srcType == GL_FLOAT);
+      /* Boil any of those types down to GL_FLOAT */
+      srcType = GL_FLOAT;
+   }
+
+   if (dstType != GL_INT && dstType != GL_UNSIGNED_INT) {
+      assert(dstType == GL_UNSIGNED_NORMALIZED ||
+             dstType == GL_SIGNED_NORMALIZED ||
+             dstType == GL_FLOAT);
+      /* Boil any of those types down to GL_FLOAT */
+      dstType = GL_FLOAT;
+   }
+
+   return srcType == dstType;
+}
+
 
 /**
  * Blit rectangular region, optionally from one framebuffer to another.
@@ -2653,14 +2702,22 @@ _mesa_BlitFramebufferEXT(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
 	 colorReadRb = colorDrawRb = NULL;
 	 mask &= ~GL_COLOR_BUFFER_BIT;
       }
+      else if (!compatible_color_datatypes(colorReadRb->Format,
+                                           colorDrawRb->Format)) {
+         _mesa_error(ctx, GL_INVALID_OPERATION,
+                     "glBlitFramebufferEXT(color buffer datatypes mismatch)");
+         return;
+      }
    }
    else {
       colorReadRb = colorDrawRb = NULL;
    }
 
    if (mask & GL_STENCIL_BUFFER_BIT) {
-      struct gl_renderbuffer *readRb = readFb->_StencilBuffer;
-      struct gl_renderbuffer *drawRb = drawFb->_StencilBuffer;
+      struct gl_renderbuffer *readRb =
+         readFb->Attachment[BUFFER_STENCIL].Renderbuffer;
+      struct gl_renderbuffer *drawRb =
+         drawFb->Attachment[BUFFER_STENCIL].Renderbuffer;
 
       /* From the EXT_framebuffer_object spec:
        *
@@ -2669,11 +2726,13 @@ _mesa_BlitFramebufferEXT(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
        *     ignored."
        */
       if ((readRb == NULL) || (drawRb == NULL)) {
-	 readRb = drawRb = NULL;
 	 mask &= ~GL_STENCIL_BUFFER_BIT;
       }
       else if (_mesa_get_format_bits(readRb->Format, GL_STENCIL_BITS) !=
 	       _mesa_get_format_bits(drawRb->Format, GL_STENCIL_BITS)) {
+	 /* There is no need to check the stencil datatype here, because
+	  * there is only one: GL_UNSIGNED_INT.
+	  */
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glBlitFramebufferEXT(stencil buffer size mismatch)");
          return;
@@ -2681,8 +2740,10 @@ _mesa_BlitFramebufferEXT(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
    }
 
    if (mask & GL_DEPTH_BUFFER_BIT) {
-      struct gl_renderbuffer *readRb = readFb->_DepthBuffer;
-      struct gl_renderbuffer *drawRb = drawFb->_DepthBuffer;
+      struct gl_renderbuffer *readRb =
+         readFb->Attachment[BUFFER_DEPTH].Renderbuffer;
+      struct gl_renderbuffer *drawRb =
+         drawFb->Attachment[BUFFER_DEPTH].Renderbuffer;
 
       /* From the EXT_framebuffer_object spec:
        *
@@ -2691,13 +2752,14 @@ _mesa_BlitFramebufferEXT(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
        *     ignored."
        */
       if ((readRb == NULL) || (drawRb == NULL)) {
-	 readRb = drawRb = NULL;
 	 mask &= ~GL_DEPTH_BUFFER_BIT;
       }
-      else if (_mesa_get_format_bits(readRb->Format, GL_DEPTH_BITS) !=
-	       _mesa_get_format_bits(drawRb->Format, GL_DEPTH_BITS)) {
+      else if ((_mesa_get_format_bits(readRb->Format, GL_DEPTH_BITS) !=
+	        _mesa_get_format_bits(drawRb->Format, GL_DEPTH_BITS)) ||
+	       (_mesa_get_format_datatype(readRb->Format) !=
+		_mesa_get_format_datatype(drawRb->Format))) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "glBlitFramebufferEXT(depth buffer size mismatch)");
+                     "glBlitFramebufferEXT(depth buffer format mismatch)");
          return;
       }
    }
@@ -2706,7 +2768,7 @@ _mesa_BlitFramebufferEXT(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
        drawFb->Visual.samples > 0 &&
        readFb->Visual.samples != drawFb->Visual.samples) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glBlitFramebufferEXT(mismatched samples");
+                  "glBlitFramebufferEXT(mismatched samples)");
       return;
    }
 
@@ -2726,6 +2788,19 @@ _mesa_BlitFramebufferEXT(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
           colorReadRb->Format != colorDrawRb->Format) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                 "glBlitFramebufferEXT(bad src/dst multisample pixel formats)");
+         return;
+      }
+   }
+
+   if (filter == GL_LINEAR && (mask & GL_COLOR_BUFFER_BIT)) {
+      /* 3.1 spec, page 199:
+       * "Calling BlitFramebuffer will result in an INVALID_OPERATION error
+       * if filter is LINEAR and read buffer contains integer data."
+       */
+      GLenum type = _mesa_get_format_datatype(colorReadRb->Format);
+      if (type == GL_INT || type == GL_UNSIGNED_INT) {
+         _mesa_error(ctx, GL_INVALID_OPERATION,
+                     "glBlitFramebufferEXT(integer color type)");
          return;
       }
    }
@@ -2785,6 +2860,7 @@ _mesa_BlitFramebufferEXT(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
 }
 #endif /* FEATURE_EXT_framebuffer_blit */
 
+
 #if FEATURE_ARB_geometry_shader4
 void GLAPIENTRY
 _mesa_FramebufferTextureARB(GLenum target, GLenum attachment,
@@ -2795,6 +2871,7 @@ _mesa_FramebufferTextureARB(GLenum target, GLenum attachment,
                "glFramebufferTextureARB "
                "not implemented!");
 }
+
 
 void GLAPIENTRY
 _mesa_FramebufferTextureFaceARB(GLenum target, GLenum attachment,

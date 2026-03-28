@@ -60,16 +60,32 @@ brw_queryobj_get_results(struct gl_context *ctx,
 
    drm_intel_bo_map(query->bo, false);
    results = query->bo->virtual;
-   if (query->Base.Target == GL_TIME_ELAPSED_EXT) {
+   switch (query->Base.Target) {
+   case GL_TIME_ELAPSED_EXT:
       if (intel->gen >= 6)
 	 query->Base.Result += 80 * (results[1] - results[0]);
       else
 	 query->Base.Result += 1000 * ((results[1] >> 32) - (results[0] >> 32));
-   } else {
+      break;
+
+   case GL_SAMPLES_PASSED_ARB:
       /* Map and count the pixels from the current query BO */
       for (i = query->first_index; i <= query->last_index; i++) {
 	 query->Base.Result += results[i * 2 + 1] - results[i * 2];
       }
+      break;
+
+   case GL_PRIMITIVES_GENERATED:
+   case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
+      /* We don't actually query the hardware for this value, so query->bo
+       * should always be NULL and execution should never reach here.
+       */
+      assert(!"Unreachable");
+      break;
+
+   default:
+      assert(!"Unrecognized query target in brw_queryobj_get_results()");
+      break;
    }
    drm_intel_bo_unmap(query->bo);
 
@@ -108,7 +124,8 @@ brw_begin_query(struct gl_context *ctx, struct gl_query_object *q)
    struct intel_context *intel = intel_context(ctx);
    struct brw_query_object *query = (struct brw_query_object *)q;
 
-   if (query->Base.Target == GL_TIME_ELAPSED_EXT) {
+   switch (query->Base.Target) {
+   case GL_TIME_ELAPSED_EXT:
       drm_intel_bo_unreference(query->bo);
       query->bo = drm_intel_bo_alloc(intel->bufmgr, "timer query",
 				     4096, 4096);
@@ -136,7 +153,9 @@ brw_begin_query(struct gl_context *ctx, struct gl_query_object *q)
 	  OUT_BATCH(0);
 	  ADVANCE_BATCH();
       }
-   } else {
+      break;
+
+   case GL_SAMPLES_PASSED_ARB:
       /* Reset our driver's tracking of query state. */
       drm_intel_bo_unreference(query->bo);
       query->bo = NULL;
@@ -145,6 +164,25 @@ brw_begin_query(struct gl_context *ctx, struct gl_query_object *q)
 
       brw->query.obj = query;
       intel->stats_wm++;
+      break;
+
+   case GL_PRIMITIVES_GENERATED:
+      /* We don't actually query the hardware for this value; we keep track of
+       * it a software counter.  So just reset the counter.
+       */
+      brw->sol.primitives_generated = 0;
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
+      /* We don't actually query the hardware for this value; we keep track of
+       * it a software counter.  So just reset the counter.
+       */
+      brw->sol.primitives_written = 0;
+      break;
+
+   default:
+      assert(!"Unrecognized query target in brw_begin_query()");
+      break;
    }
 }
 
@@ -158,7 +196,8 @@ brw_end_query(struct gl_context *ctx, struct gl_query_object *q)
    struct intel_context *intel = intel_context(ctx);
    struct brw_query_object *query = (struct brw_query_object *)q;
 
-   if (query->Base.Target == GL_TIME_ELAPSED_EXT) {
+   switch (query->Base.Target) {
+   case GL_TIME_ELAPSED_EXT:
       if (intel->gen >= 6) {
 	  BEGIN_BATCH(4);
 	  OUT_BATCH(_3DSTATE_PIPE_CONTROL);
@@ -184,7 +223,9 @@ brw_end_query(struct gl_context *ctx, struct gl_query_object *q)
       }
 
       intel_batchbuffer_flush(intel);
-   } else {
+      break;
+
+   case GL_SAMPLES_PASSED_ARB:
       /* Flush the batchbuffer in case it has writes to our query BO.
        * Have later queries write to a new query BO so that further rendering
        * doesn't delay the collection of our results.
@@ -200,6 +241,37 @@ brw_end_query(struct gl_context *ctx, struct gl_query_object *q)
       brw->query.obj = NULL;
 
       intel->stats_wm--;
+      break;
+
+   case GL_PRIMITIVES_GENERATED:
+      /* We don't actually query the hardware for this value; we keep track of
+       * it in a software counter.  So just read the counter and store it in
+       * the query object.
+       */
+      query->Base.Result = brw->sol.primitives_generated;
+
+      /* And set brw->query.obj to NULL so that this query won't try to wait
+       * for any rendering to complete.
+       */
+      query->bo = NULL;
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
+      /* We don't actually query the hardware for this value; we keep track of
+       * it in a software counter.  So just read the counter and store it in
+       * the query object.
+       */
+      query->Base.Result = brw->sol.primitives_written;
+
+      /* And set brw->query.obj to NULL so that this query won't try to wait
+       * for any rendering to complete.
+       */
+      query->bo = NULL;
+      break;
+
+   default:
+      assert(!"Unrecognized query target in brw_end_query()");
+      break;
    }
 }
 

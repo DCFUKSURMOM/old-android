@@ -127,7 +127,7 @@ static void r600_buffer_transfer_inline_write(struct pipe_context *pipe,
 	assert(rbuffer->b.user_ptr == NULL);
 
 	map = rctx->ws->buffer_map(rbuffer->buf, rctx->ctx.cs,
-				   PIPE_TRANSFER_WRITE | PIPE_TRANSFER_DISCARD | usage);
+				   PIPE_TRANSFER_WRITE | PIPE_TRANSFER_DISCARD_RANGE | usage);
 
 	memcpy(map + box->x, data, box->width);
 
@@ -151,12 +151,40 @@ bool r600_init_resource(struct r600_screen *rscreen,
 			unsigned size, unsigned alignment,
 			unsigned bind, unsigned usage)
 {
-	res->buf = rscreen->ws->buffer_create(rscreen->ws, size, alignment, bind, usage);
+	uint32_t initial_domain, domains;
+
+	/* Staging resources particpate in transfers and blits only
+	 * and are used for uploads and downloads from regular
+	 * resources.  We generate them internally for some transfers.
+	 */
+	if (usage == PIPE_USAGE_STAGING) {
+		domains = RADEON_DOMAIN_GTT;
+		initial_domain = RADEON_DOMAIN_GTT;
+	} else {
+		domains = RADEON_DOMAIN_GTT | RADEON_DOMAIN_VRAM;
+
+		switch(usage) {
+		case PIPE_USAGE_DYNAMIC:
+		case PIPE_USAGE_STREAM:
+		case PIPE_USAGE_STAGING:
+			initial_domain = RADEON_DOMAIN_GTT;
+			break;
+		case PIPE_USAGE_DEFAULT:
+		case PIPE_USAGE_STATIC:
+		case PIPE_USAGE_IMMUTABLE:
+		default:
+			initial_domain = RADEON_DOMAIN_VRAM;
+			break;
+		}
+	}
+
+	res->buf = rscreen->ws->buffer_create(rscreen->ws, size, alignment, bind, initial_domain);
 	if (!res->buf) {
 		return false;
 	}
 
 	res->cs_buf = rscreen->ws->buffer_get_cs_handle(res->buf);
+	res->domains = domains;
 	return true;
 }
 
@@ -177,7 +205,7 @@ struct pipe_resource *r600_buffer_create(struct pipe_screen *screen,
 	rbuffer->b.user_ptr = NULL;
 
 	if (!r600_init_resource(rscreen, rbuffer, templ->width0, alignment, templ->bind, templ->usage)) {
-		FREE(rbuffer);
+		util_slab_free(&rscreen->pool_buffers, rbuffer);
 		return NULL;
 	}
 	return &rbuffer->b.b.b;
@@ -213,10 +241,9 @@ void r600_upload_index_buffer(struct r600_pipe_context *rctx,
 			      struct pipe_index_buffer *ib, unsigned count)
 {
 	struct r600_resource *rbuffer = r600_resource(ib->buffer);
-	boolean flushed;
 
 	u_upload_data(rctx->vbuf_mgr->uploader, 0, count * ib->index_size,
-		      rbuffer->b.user_ptr, &ib->offset, &ib->buffer, &flushed);
+		      rbuffer->b.user_ptr, &ib->offset, &ib->buffer);
 }
 
 void r600_upload_const_buffer(struct r600_pipe_context *rctx, struct r600_resource **rbuffer,
@@ -225,7 +252,6 @@ void r600_upload_const_buffer(struct r600_pipe_context *rctx, struct r600_resour
 	if ((*rbuffer)->b.user_ptr) {
 		uint8_t *ptr = (*rbuffer)->b.user_ptr;
 		unsigned size = (*rbuffer)->b.b.b.width0;
-		boolean flushed;
 
 		*rbuffer = NULL;
 
@@ -243,12 +269,12 @@ void r600_upload_const_buffer(struct r600_pipe_context *rctx, struct r600_resour
 			}
 
 			u_upload_data(rctx->vbuf_mgr->uploader, 0, size, tmpPtr, const_offset,
-				      (struct pipe_resource**)rbuffer, &flushed);
+				      (struct pipe_resource**)rbuffer);
 
 			free(tmpPtr);
 		} else {
 			u_upload_data(rctx->vbuf_mgr->uploader, 0, size, ptr, const_offset,
-				      (struct pipe_resource**)rbuffer, &flushed);
+				      (struct pipe_resource**)rbuffer);
 		}
 	} else {
 		*const_offset = 0;

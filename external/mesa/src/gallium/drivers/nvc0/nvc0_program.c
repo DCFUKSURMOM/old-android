@@ -59,11 +59,13 @@ nvc0_shader_input_address(unsigned sn, unsigned si, unsigned ubase)
    case TGSI_SEMANTIC_FOG:          return 0x270;
    case TGSI_SEMANTIC_COLOR:        return 0x280 + si * 0x10;
    case TGSI_SEMANTIC_BCOLOR:       return 0x2a0 + si * 0x10;
-   case NV50_SEMANTIC_CLIPDISTANCE: return 0x2c0 + si * 0x10;
+   case NV50_SEMANTIC_CLIPDISTANCE: return 0x2c0 + si * 0x4;
+   case TGSI_SEMANTIC_CLIPDIST:     return 0x2c0 + si * 0x10;
+   case TGSI_SEMANTIC_CLIPVERTEX:   return 0x260;
    case NV50_SEMANTIC_POINTCOORD:   return 0x2e0;
    case NV50_SEMANTIC_TESSCOORD:    return 0x2f0;
    case TGSI_SEMANTIC_INSTANCEID:   return 0x2f8;
-   case NV50_SEMANTIC_VERTEXID:     return 0x2fc;
+   case TGSI_SEMANTIC_VERTEXID:     return 0x2fc;
    case NV50_SEMANTIC_TEXCOORD:     return 0x300 + si * 0x10;
    case TGSI_SEMANTIC_FACE:         return 0x3fc;
    case NV50_SEMANTIC_INVOCATIONID: return ~0;
@@ -87,7 +89,9 @@ nvc0_shader_output_address(unsigned sn, unsigned si, unsigned ubase)
    case TGSI_SEMANTIC_FOG:           return 0x270;
    case TGSI_SEMANTIC_COLOR:         return 0x280 + si * 0x10;
    case TGSI_SEMANTIC_BCOLOR:        return 0x2a0 + si * 0x10;
-   case NV50_SEMANTIC_CLIPDISTANCE:  return 0x2c0 + si * 0x10;
+   case NV50_SEMANTIC_CLIPDISTANCE:  return 0x2c0 + si * 0x4;
+   case TGSI_SEMANTIC_CLIPDIST:      return 0x2c0 + si * 0x10;
+   case TGSI_SEMANTIC_CLIPVERTEX:    return 0x260;
    case NV50_SEMANTIC_TEXCOORD:      return 0x300 + si * 0x10;
    case TGSI_SEMANTIC_EDGEFLAG:      return ~0;
    default:
@@ -103,8 +107,8 @@ nvc0_vp_assign_input_slots(struct nv50_ir_prog_info *info)
 
    for (n = 0, i = 0; i < info->numInputs; ++i) {
       switch (info->in[i].sn) {
-      case TGSI_SEMANTIC_INSTANCEID:
-      case NV50_SEMANTIC_VERTEXID:
+      case TGSI_SEMANTIC_INSTANCEID: /* for SM4 only, in TGSI they're SVs */
+      case TGSI_SEMANTIC_VERTEXID:
          info->in[i].mask = 0x1;
          info->in[i].slot[0] =
             nvc0_shader_input_address(info->in[i].sn, 0, 0) / 4;
@@ -260,7 +264,7 @@ nvc0_vtgp_gen_header(struct nvc0_program *vp, struct nv50_ir_prog_info *info)
       case TGSI_SEMANTIC_INSTANCEID:
          vp->hdr[10] |= 1 << 30;
          break;
-      case NV50_SEMANTIC_VERTEXID:
+      case TGSI_SEMANTIC_VERTEXID:
          vp->hdr[10] |= 1 << 31;
          break;
       default:
@@ -268,10 +272,13 @@ nvc0_vtgp_gen_header(struct nvc0_program *vp, struct nv50_ir_prog_info *info)
       }
    }
 
-   vp->vp.clip_enable = (1 << info->io.clipDistanceCount) - 1;
+   vp->vp.clip_enable = info->io.clipDistanceMask;
    for (i = 0; i < 8; ++i)
       if (info->io.cullDistanceMask & (1 << i))
          vp->vp.clip_mode |= 1 << (i * 4);
+
+   if (info->io.genUserClip < 0)
+      vp->vp.num_ucps = PIPE_MAX_CLIP_PLANES; /* prevent rebuilding */
 
    return 0;
 }
@@ -282,7 +289,7 @@ nvc0_vp_gen_header(struct nvc0_program *vp, struct nv50_ir_prog_info *info)
    vp->hdr[0] = 0x20061 | (1 << 10);
    vp->hdr[4] = 0xff000;
 
-   vp->hdr[18] = (1 << info->io.clipDistanceCount) - 1;
+   vp->hdr[18] = info->io.clipDistanceMask;
 
    return nvc0_vtgp_gen_header(vp, info);
 }
@@ -446,20 +453,20 @@ nvc0_fp_gen_header(struct nvc0_program *fp, struct nv50_ir_prog_info *info)
       for (c = 0; c < 4; ++c) {
          if (!(info->in[i].mask & (1 << c)))
             continue;
-	 a = info->in[i].slot[c];
+         a = info->in[i].slot[c];
          if (info->in[i].slot[0] >= (0x060 / 4) &&
              info->in[i].slot[0] <= (0x07c / 4)) {
             fp->hdr[5] |= 1 << (24 + (a - 0x060 / 4));
          } else
-         if (info->in[i].slot[0] == (0x2e0 / 4)) {
-            if (c <= 1)
-               fp->hdr[14] |= 1 << (24 + c);
+         if (info->in[i].slot[0] >= (0x2c0 / 4) &&
+             info->in[i].slot[0] <= (0x2fc / 4)) {
+            fp->hdr[14] |= (1 << (a - 0x280 / 4)) & 0x03ff0000;
          } else {
             if (info->in[i].slot[c] < (0x040 / 4) ||
                 info->in[i].slot[c] > (0x380 / 4))
                continue;
             a *= 2;
-            if (info->in[i].slot[0] >= (0x2c0 / 4))
+            if (info->in[i].slot[0] >= (0x300 / 4))
                a -= 32;
             fp->hdr[4 + a / 32] |= m << (a % 32);
          }
@@ -478,6 +485,40 @@ nvc0_fp_gen_header(struct nvc0_program *fp, struct nv50_ir_prog_info *info)
                          (info->io.globalAccess & 2));
 
    return 0;
+}
+
+static struct nvc0_transform_feedback_state *
+nvc0_program_create_tfb_state(const struct nv50_ir_prog_info *info,
+                              const struct pipe_stream_output_info *pso)
+{
+   struct nvc0_transform_feedback_state *tfb;
+   int n = 0;
+   int i, c, b;
+
+   tfb = MALLOC(sizeof(*tfb) + pso->num_outputs * 4 * sizeof(uint8_t));
+   if (!tfb)
+      return NULL;
+
+   for (b = 0; b < 4; ++b) {
+      tfb->varying_count[b] = 0;
+
+      for (i = 0; i < pso->num_outputs; ++i) {
+         if (pso->output[i].output_buffer != b)
+            continue;
+         for (c = 0; c < 4; ++c) {
+            if (!(pso->output[i].register_mask & (1 << c)))
+               continue;
+            tfb->varying_count[b]++;
+            tfb->varying_index[n++] =
+               info->out[pso->output[i].register_index].slot[c];
+         }
+      }
+      tfb->stride[b] = tfb->varying_count[b] * 4;
+   }
+   if (pso->stride)
+      tfb->stride[0] = pso->stride;
+
+   return tfb;
 }
 
 #ifdef DEBUG
@@ -515,7 +556,7 @@ nvc0_program_translate(struct nvc0_program *prog)
    info->bin.sourceRep = NV50_PROGRAM_IR_TGSI;
    info->bin.source = (void *)prog->pipe.tokens;
 
-   info->io.clipDistanceCount = prog->vp.num_ucps;
+   info->io.genUserClip = prog->vp.num_ucps;
 
    info->assignSlots = nvc0_program_assign_varying_slots;
 
@@ -539,7 +580,11 @@ nvc0_program_translate(struct nvc0_program *prog)
    prog->relocs = info->bin.relocData;
    prog->max_gpr = MAX2(4, (info->bin.maxGPR + 1));
 
-   prog->vp.edgeflag = PIPE_MAX_ATTRIBS;
+   prog->vp.need_vertex_id = info->io.vertexId < PIPE_MAX_SHADER_INPUTS;
+
+   if (info->io.edgeFlagOut < PIPE_MAX_ATTRIBS)
+      info->out[info->io.edgeFlagOut].mask = 0; /* for headergen */
+   prog->vp.edgeflag = info->io.edgeFlagIn;
 
    switch (prog->type) {
    case PIPE_SHADER_VERTEX:
@@ -576,6 +621,10 @@ nvc0_program_translate(struct nvc0_program *prog)
    }
    if (info->io.globalAccess)
       prog->hdr[0] |= 1 << 16;
+
+   if (prog->pipe.stream_output.num_outputs)
+      prog->tfb = nvc0_program_create_tfb_state(info,
+                                                &prog->pipe.stream_output);
 
 out:
    FREE(info);
@@ -666,6 +715,9 @@ nvc0_program_library_upload(struct nvc0_context *nvc0)
 void
 nvc0_program_destroy(struct nvc0_context *nvc0, struct nvc0_program *prog)
 {
+   const struct pipe_shader_state pipe = prog->pipe;
+   const ubyte type = prog->type;
+
    if (prog->res)
       nouveau_resource_free(&prog->res);
 
@@ -675,8 +727,14 @@ nvc0_program_destroy(struct nvc0_context *nvc0, struct nvc0_program *prog)
       FREE(prog->immd_data);
    if (prog->relocs)
       FREE(prog->relocs);
+   if (prog->tfb) {
+      if (nvc0->state.tfb == prog->tfb)
+         nvc0->state.tfb = NULL;
+      FREE(prog->tfb);
+   }
 
-   memset(prog->hdr, 0, sizeof(prog->hdr));
+   memset(prog, 0, sizeof(*prog));
 
-   prog->translated = FALSE;
+   prog->pipe = pipe;
+   prog->type = type;
 }

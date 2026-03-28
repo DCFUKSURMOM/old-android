@@ -63,14 +63,16 @@ static const struct brw_tracked_state *gen4_atoms[] =
    &brw_cc_vp,
    &brw_cc_unit,
 
-   &brw_vs_constants, /* Before vs_surfaces and constant_buffer */
-   &brw_wm_constants, /* Before wm_surfaces and constant_buffer */
+   /* Surface state setup.  Must come before the VS/WM unit.  The binding
+    * table upload must be last.
+    */
+   &brw_vs_pull_constants,
+   &brw_wm_pull_constants,
+   &brw_renderbuffer_surfaces,
+   &brw_texture_surfaces,
+   &brw_binding_table,
 
-   &brw_vs_surfaces,		/* must do before unit */
-   &brw_wm_constant_surface,	/* must do before wm surfaces/bind bo */
-   &brw_wm_surfaces,		/* must do before samplers and unit */
-   &brw_wm_binding_table,
-   &brw_wm_samplers,
+   &brw_samplers,
 
    /* These set up state for brw_psp_urb_cbs */
    &brw_wm_unit,
@@ -82,7 +84,7 @@ static const struct brw_tracked_state *gen4_atoms[] =
 
    /* Command packets:
     */
-   &brw_invarient_state,
+   &brw_invariant_state,
    &brw_state_base_address,
 
    &brw_binding_table_pointers,
@@ -119,7 +121,7 @@ static const struct brw_tracked_state *gen6_atoms[] =
    &gen6_sf_vp,
 
    /* Command packets: */
-   &brw_invarient_state,
+   &brw_invariant_state,
 
    /* must do before binding table pointers, cc state ptrs */
    &brw_state_base_address,
@@ -133,17 +135,20 @@ static const struct brw_tracked_state *gen6_atoms[] =
    &gen6_depth_stencil_state,	/* must do before cc unit */
    &gen6_cc_state_pointers,
 
-   &brw_vs_constants, /* Before vs_surfaces and constant_buffer */
-   &brw_wm_constants, /* Before wm_surfaces and constant_buffer */
-   &gen6_vs_constants, /* Before vs_state */
-   &gen6_wm_constants, /* Before wm_state */
+   &gen6_vs_push_constants, /* Before vs_state */
+   &gen6_wm_push_constants, /* Before wm_state */
 
-   &brw_vs_surfaces,		/* must do before unit */
-   &brw_wm_constant_surface,	/* must do before wm surfaces/bind bo */
-   &brw_wm_surfaces,		/* must do before samplers and unit */
-   &brw_wm_binding_table,
+   /* Surface state setup.  Must come before the VS/WM unit.  The binding
+    * table upload must be last.
+    */
+   &brw_vs_pull_constants,
+   &brw_wm_pull_constants,
+   &gen6_renderbuffer_surfaces,
+   &brw_texture_surfaces,
+   &gen6_sol_surface,
+   &brw_binding_table,
 
-   &brw_wm_samplers,
+   &brw_samplers,
    &gen6_sampler_state,
 
    &gen6_vs_state,
@@ -166,6 +171,7 @@ static const struct brw_tracked_state *gen6_atoms[] =
 
    &brw_drawing_rect,
 
+   &gen6_sol_indices,
    &brw_indices,
    &brw_index_buffer,
    &brw_vertices,
@@ -181,7 +187,8 @@ const struct brw_tracked_state *gen7_atoms[] =
    &brw_wm_prog,
 
    /* Command packets: */
-   &brw_invarient_state,
+   &brw_invariant_state,
+   &gen7_push_constant_alloc,
 
    /* must do before binding table pointers, cc state ptrs */
    &brw_state_base_address,
@@ -198,20 +205,23 @@ const struct brw_tracked_state *gen7_atoms[] =
    &gen7_cc_state_pointer,
    &gen7_depth_stencil_state_pointer,
 
-   &brw_vs_constants, /* Before vs_surfaces and constant_buffer */
-   &brw_wm_constants, /* Before wm_surfaces and constant_buffer */
-   &gen6_vs_constants, /* Before vs_state */
-   &gen6_wm_constants, /* Before wm_surfaces and constant_buffer */
+   &gen6_vs_push_constants, /* Before vs_state */
+   &gen6_wm_push_constants, /* Before wm_surfaces and constant_buffer */
 
-   &brw_vs_surfaces,		/* must do before unit */
-   &gen7_wm_constant_surface,	/* must do before wm surfaces/bind bo */
-   &gen7_wm_surfaces,		/* must do before samplers and unit */
-   &brw_wm_binding_table,
+   /* Surface state setup.  Must come before the VS/WM unit.  The binding
+    * table upload must be last.
+    */
+   &brw_vs_pull_constants,
+   &brw_wm_pull_constants,
+   &gen6_renderbuffer_surfaces,
+   &brw_texture_surfaces,
+   &brw_binding_table,
 
    &gen7_samplers,
 
    &gen7_disable_stages,
    &gen7_vs_state,
+   &gen7_sol_state,
    &gen7_clip_state,
    &gen7_sbe_state,
    &gen7_sf_state,
@@ -352,15 +362,12 @@ static struct dirty_bit_map brw_bits[] = {
    DEFINE_BIT(BRW_NEW_WM_INPUT_DIMENSIONS),
    DEFINE_BIT(BRW_NEW_PROGRAM_CACHE),
    DEFINE_BIT(BRW_NEW_PSP),
-   DEFINE_BIT(BRW_NEW_WM_SURFACES),
+   DEFINE_BIT(BRW_NEW_SURFACES),
    DEFINE_BIT(BRW_NEW_INDICES),
    DEFINE_BIT(BRW_NEW_INDEX_BUFFER),
    DEFINE_BIT(BRW_NEW_VERTICES),
    DEFINE_BIT(BRW_NEW_BATCH),
-   DEFINE_BIT(BRW_NEW_NR_WM_SURFACES),
-   DEFINE_BIT(BRW_NEW_NR_VS_SURFACES),
    DEFINE_BIT(BRW_NEW_VS_CONSTBUF),
-   DEFINE_BIT(BRW_NEW_WM_CONSTBUF),
    DEFINE_BIT(BRW_NEW_VS_BINDING_TABLE),
    DEFINE_BIT(BRW_NEW_GS_BINDING_TABLE),
    DEFINE_BIT(BRW_NEW_PS_BINDING_TABLE),

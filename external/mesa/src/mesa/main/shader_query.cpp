@@ -107,8 +107,7 @@ _mesa_GetActiveAttribARB(GLhandleARB program, GLuint desired_index,
 
       if (var == NULL
 	  || var->mode != ir_var_in
-	  || var->location == -1
-	  || var->location < VERT_ATTRIB_GENERIC0)
+	  || var->location == -1)
 	 continue;
 
       if (current_index == desired_index) {
@@ -199,8 +198,7 @@ _mesa_count_active_attribs(struct gl_shader_program *shProg)
 
       if (var == NULL
 	  || var->mode != ir_var_in
-	  || var->location == -1
-	  || var->location < VERT_ATTRIB_GENERIC0)
+	  || var->location == -1)
 	 continue;
 
       i++;
@@ -226,8 +224,7 @@ _mesa_longest_attribute_name_length(struct gl_shader_program *shProg)
 
       if (var == NULL
 	  || var->mode != ir_var_in
-	  || var->location == -1
-	  || var->location < VERT_ATTRIB_GENERIC0)
+	  || var->location == -1)
 	 continue;
 
       const size_t len = strlen(var->name);
@@ -236,4 +233,97 @@ _mesa_longest_attribute_name_length(struct gl_shader_program *shProg)
    }
 
    return longest;
+}
+
+void GLAPIENTRY
+_mesa_BindFragDataLocation(GLuint program, GLuint colorNumber,
+			   const GLchar *name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_shader_program *const shProg =
+      _mesa_lookup_shader_program_err(ctx, program, "glBindFragDataLocation");
+   if (!shProg)
+      return;
+
+   if (!name)
+      return;
+
+   if (strncmp(name, "gl_", 3) == 0) {
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glBindFragDataLocation(illegal name)");
+      return;
+   }
+
+   if (colorNumber >= ctx->Const.MaxDrawBuffers) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "glBindFragDataLocation(index)");
+      return;
+   }
+
+   /* Replace the current value if it's already in the list.  Add
+    * FRAG_RESULT_DATA0 because that's how the linker differentiates
+    * between built-in attributes and user-defined attributes.
+    */
+   shProg->FragDataBindings->put(colorNumber + FRAG_RESULT_DATA0, name);
+
+   /*
+    * Note that this binding won't go into effect until
+    * glLinkProgram is called again.
+    */
+}
+
+GLint GLAPIENTRY
+_mesa_GetFragDataLocation(GLuint program, const GLchar *name)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_shader_program *const shProg =
+      _mesa_lookup_shader_program_err(ctx, program, "glGetFragDataLocation");
+
+   if (!shProg) {
+      return -1;
+   }
+
+   if (!shProg->LinkStatus) {
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetFragDataLocation(program not linked)");
+      return -1;
+   }
+
+   if (!name)
+      return -1;
+
+   if (strncmp(name, "gl_", 3) == 0) {
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetFragDataLocation(illegal name)");
+      return -1;
+   }
+
+   /* Not having a fragment shader is not an error.
+    */
+   if (shProg->_LinkedShaders[MESA_SHADER_FRAGMENT] == NULL)
+      return -1;
+
+   exec_list *ir = shProg->_LinkedShaders[MESA_SHADER_FRAGMENT]->ir;
+   foreach_list(node, ir) {
+      const ir_variable *const var = ((ir_instruction *) node)->as_variable();
+
+      /* The extra check against FRAG_RESULT_DATA0 is because
+       * glGetFragDataLocation cannot be used on "conventional" attributes.
+       *
+       * From page 95 of the OpenGL 3.0 spec:
+       *
+       *     "If name is not an active attribute, if name is a conventional
+       *     attribute, or if an error occurs, -1 will be returned."
+       */
+      if (var == NULL
+	  || var->mode != ir_var_out
+	  || var->location == -1
+	  || var->location < FRAG_RESULT_DATA0)
+	 continue;
+
+      if (strcmp(var->name, name) == 0)
+	 return var->location - FRAG_RESULT_DATA0;
+   }
+
+   return -1;
 }

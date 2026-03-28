@@ -35,6 +35,7 @@
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/formats.h"
+#include "main/image.h"
 #include "main/macros.h"
 #include "main/mfeatures.h"
 #include "main/mtypes.h"
@@ -884,8 +885,6 @@ _mesa_TexParameterIuiv(GLenum target, GLenum pname, const GLuint *params)
 }
 
 
-
-
 void GLAPIENTRY
 _mesa_GetTexLevelParameterfv( GLenum target, GLint level,
                               GLenum pname, GLfloat *params )
@@ -981,54 +980,28 @@ _mesa_GetTexLevelParameteriv( GLenum target, GLint level,
          *params = img->Border;
          break;
       case GL_TEXTURE_RED_SIZE:
-         if (img->_BaseFormat == GL_RED) {
-            *params = _mesa_get_format_bits(texFormat, pname);
-	    break;
-	 }
-	 /* FALLTHROUGH */
       case GL_TEXTURE_GREEN_SIZE:
-         if (img->_BaseFormat == GL_RG) {
-            *params = _mesa_get_format_bits(texFormat, pname);
-	    break;
-	 }
-	 /* FALLTHROUGH */
       case GL_TEXTURE_BLUE_SIZE:
-         if (img->_BaseFormat == GL_RGB || img->_BaseFormat == GL_RGBA)
-            *params = _mesa_get_format_bits(texFormat, pname);
-         else
-            *params = 0;
-         break;
       case GL_TEXTURE_ALPHA_SIZE:
-         if (img->_BaseFormat == GL_ALPHA ||
-             img->_BaseFormat == GL_LUMINANCE_ALPHA ||
-             img->_BaseFormat == GL_RGBA)
+         if (_mesa_base_format_has_channel(img->_BaseFormat, pname))
             *params = _mesa_get_format_bits(texFormat, pname);
          else
             *params = 0;
          break;
       case GL_TEXTURE_INTENSITY_SIZE:
-         if (img->_BaseFormat != GL_INTENSITY)
-            *params = 0;
-         else {
+      case GL_TEXTURE_LUMINANCE_SIZE:
+         if (_mesa_base_format_has_channel(img->_BaseFormat, pname)) {
             *params = _mesa_get_format_bits(texFormat, pname);
             if (*params == 0) {
-               /* intensity probably stored as rgb texture */
-               *params = MIN2(_mesa_get_format_bits(texFormat, GL_TEXTURE_RED_SIZE),
-                              _mesa_get_format_bits(texFormat, GL_TEXTURE_GREEN_SIZE));
+               /* intensity or luminance is probably stored as RGB[A] */
+               *params = MIN2(_mesa_get_format_bits(texFormat,
+                                                    GL_TEXTURE_RED_SIZE),
+                              _mesa_get_format_bits(texFormat,
+                                                    GL_TEXTURE_GREEN_SIZE));
             }
          }
-         break;
-      case GL_TEXTURE_LUMINANCE_SIZE:
-         if (img->_BaseFormat != GL_LUMINANCE &&
-             img->_BaseFormat != GL_LUMINANCE_ALPHA)
-            *params = 0;
          else {
-            *params = _mesa_get_format_bits(texFormat, pname);
-            if (*params == 0) {
-               /* luminance probably stored as rgb texture */
-               *params = MIN2(_mesa_get_format_bits(texFormat, GL_TEXTURE_RED_SIZE),
-                              _mesa_get_format_bits(texFormat, GL_TEXTURE_GREEN_SIZE));
-            }
+            *params = 0;
          }
          break;
       case GL_TEXTURE_DEPTH_SIZE_ARB:
@@ -1067,46 +1040,18 @@ _mesa_GetTexLevelParameteriv( GLenum target, GLint level,
 
       /* GL_ARB_texture_float */
       case GL_TEXTURE_RED_TYPE_ARB:
-         if (!ctx->Extensions.ARB_texture_float)
-            goto invalid_pname;
-         *params = _mesa_get_format_bits(texFormat, GL_TEXTURE_RED_SIZE) ?
-            _mesa_get_format_datatype(texFormat) : GL_NONE;
-         break;
       case GL_TEXTURE_GREEN_TYPE_ARB:
-         if (!ctx->Extensions.ARB_texture_float)
-            goto invalid_pname;
-         *params = _mesa_get_format_bits(texFormat, GL_TEXTURE_GREEN_SIZE) ?
-            _mesa_get_format_datatype(texFormat) : GL_NONE;
-         break;
       case GL_TEXTURE_BLUE_TYPE_ARB:
-         if (!ctx->Extensions.ARB_texture_float)
-            goto invalid_pname;
-         *params = _mesa_get_format_bits(texFormat, GL_TEXTURE_BLUE_SIZE) ?
-            _mesa_get_format_datatype(texFormat) : GL_NONE;
-         break;
       case GL_TEXTURE_ALPHA_TYPE_ARB:
-         if (!ctx->Extensions.ARB_texture_float)
-            goto invalid_pname;
-         *params = _mesa_get_format_bits(texFormat, GL_TEXTURE_ALPHA_SIZE) ?
-            _mesa_get_format_datatype(texFormat) : GL_NONE;
-         break;
       case GL_TEXTURE_LUMINANCE_TYPE_ARB:
-         if (!ctx->Extensions.ARB_texture_float)
-            goto invalid_pname;
-         *params = _mesa_get_format_bits(texFormat, GL_TEXTURE_LUMINANCE_SIZE) ?
-            _mesa_get_format_datatype(texFormat) : GL_NONE;
-         break;
       case GL_TEXTURE_INTENSITY_TYPE_ARB:
-         if (!ctx->Extensions.ARB_texture_float)
-            goto invalid_pname;
-         *params = _mesa_get_format_bits(texFormat, GL_TEXTURE_INTENSITY_SIZE) ?
-            _mesa_get_format_datatype(texFormat) : GL_NONE;
-         break;
       case GL_TEXTURE_DEPTH_TYPE_ARB:
          if (!ctx->Extensions.ARB_texture_float)
             goto invalid_pname;
-         *params = _mesa_get_format_bits(texFormat, GL_TEXTURE_DEPTH_SIZE) ?
-            _mesa_get_format_datatype(texFormat) : GL_NONE;
+	 if (_mesa_base_format_has_channel(img->_BaseFormat, pname))
+	    *params = _mesa_get_format_datatype(texFormat);
+	 else
+	    *params = GL_NONE;
          break;
 
       default:
@@ -1169,8 +1114,7 @@ _mesa_GetTexParameterfv( GLenum target, GLenum pname, GLfloat *params )
          }
          break;
       case GL_TEXTURE_RESIDENT:
-         *params = ctx->Driver.IsTextureResident ?
-            ctx->Driver.IsTextureResident(ctx, obj) : 1.0F;
+         *params = 1.0F;
          break;
       case GL_TEXTURE_PRIORITY:
          *params = obj->Priority;
@@ -1316,8 +1260,7 @@ _mesa_GetTexParameteriv( GLenum target, GLenum pname, GLint *params )
          }
          break;;
       case GL_TEXTURE_RESIDENT:
-         *params = ctx->Driver.IsTextureResident ?
-            ctx->Driver.IsTextureResident(ctx, obj) : 1;
+         *params = 1;
          break;;
       case GL_TEXTURE_PRIORITY:
          *params = FLOAT_TO_INT(obj->Priority);

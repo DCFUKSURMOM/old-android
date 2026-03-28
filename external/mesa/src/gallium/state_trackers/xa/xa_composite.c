@@ -39,7 +39,7 @@
 #define XFixedToDouble(f)    (((double) (f)) / 65536.)
 
 struct xa_composite_blend {
-    enum xa_composite_op op : 8;
+    unsigned op : 8;
 
     unsigned alpha_dst : 4;
     unsigned alpha_src : 4;
@@ -113,8 +113,7 @@ blend_for_op(struct xa_composite_blend *blend,
     /*
      * Temporarily disable component alpha since it appears buggy.
      */
-    if (src_pic->component_alpha ||
-	(mask_pic && mask_pic->component_alpha))
+    if (mask_pic && mask_pic->component_alpha)
 	return FALSE;
 
     /*
@@ -213,7 +212,7 @@ xa_is_filter_accelerated(struct xa_picture *pic)
     return 1;
 }
 
-int
+XA_EXPORT int
 xa_composite_check_accelerated(const struct xa_composite *comp)
 {
     struct xa_composite_blend blend;
@@ -227,6 +226,14 @@ xa_composite_check_accelerated(const struct xa_composite *comp)
 
     if (src_pic->src_pict) {
 	if (src_pic->src_pict->type != xa_src_pict_solid_fill)
+	    return -XA_ERR_INVAL;
+
+	/*
+	 * Currently we don't support solid fill with a mask.
+	 * We can easily do that, but that would require shader,
+	 * sampler view setup and vertex setup modification.
+	 */
+	if (comp->mask)
 	    return -XA_ERR_INVAL;
     }
 
@@ -330,7 +337,7 @@ bind_shaders(struct xa_context *ctx, const struct xa_composite *comp)
 
 	if (src_pic->src_pict) {
 	    if (src_pic->src_pict->type == xa_src_pict_solid_fill) {
-		fs_traits |= FS_SOLID_FILL;
+		fs_traits |= FS_SOLID_FILL | FS_FILL;
 		vs_traits |= VS_SOLID_FILL;
 		xa_pixel_to_float4(src_pic->src_pict->solid_fill.color,
 				   ctx->solid_color);
@@ -440,6 +447,16 @@ bind_samplers(struct xa_context *ctx,
 					     &view_templ);
 	pipe_sampler_view_reference(&ctx->bound_sampler_views[1], NULL);
 	ctx->bound_sampler_views[1] = src_view;
+
+
+	/*
+	 * If src is a solid color, we have no src view, so set up a
+	 * dummy one that will not be used anyway.
+	 */
+	if (ctx->bound_sampler_views[0] == NULL)
+	    pipe_sampler_view_reference(&ctx->bound_sampler_views[0],
+					src_view);
+
     }
 
     cso_set_samplers(ctx->cso, ctx->num_bound_samplers,
@@ -448,7 +465,7 @@ bind_samplers(struct xa_context *ctx,
 				   ctx->bound_sampler_views);
 }
 
-int
+XA_EXPORT int
 xa_composite_prepare(struct xa_context *ctx,
 		     const struct xa_composite *comp)
 {
@@ -482,9 +499,10 @@ xa_composite_prepare(struct xa_context *ctx,
     return XA_ERR_NONE;
 }
 
-void xa_composite_rect(struct xa_context *ctx,
-		       int srcX, int srcY, int maskX, int maskY,
-		       int dstX, int dstY, int width, int height)
+XA_EXPORT void
+xa_composite_rect(struct xa_context *ctx,
+		  int srcX, int srcY, int maskX, int maskY,
+		  int dstX, int dstY, int width, int height)
 {
     if (ctx->num_bound_samplers == 0 ) { /* solid fill */
 	renderer_solid(ctx, dstX, dstY, dstX + width, dstY + height,
@@ -505,7 +523,7 @@ void xa_composite_rect(struct xa_context *ctx,
     }
 }
 
-void
+XA_EXPORT void
 xa_composite_done(struct xa_context *ctx)
 {
     renderer_draw_flush(ctx);
@@ -522,7 +540,7 @@ static const struct xa_composite_allocation a = {
     .xa_source_pict_size = sizeof(union xa_source_pict),
 };
 
-const struct xa_composite_allocation *
+XA_EXPORT const struct xa_composite_allocation *
 xa_composite_allocation(void)
 {
     return &a;

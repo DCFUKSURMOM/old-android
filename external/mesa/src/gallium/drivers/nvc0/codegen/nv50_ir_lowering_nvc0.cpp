@@ -322,10 +322,13 @@ NVC0LoweringPass::handleTEX(TexInstruction *i)
       Value *ticRel = i->getIndirectR();
       Value *tscRel = i->getIndirectS();
 
-      if (arrayIndex)
-         bld.mkCvt(OP_CVT, TYPE_U16, src, TYPE_F32, arrayIndex);
-      else
+      if (arrayIndex) {
+         int sat = (i->op == OP_TXF) ? 1 : 0;
+         DataType sTy = (i->op == OP_TXF) ? TYPE_U32 : TYPE_F32;
+         bld.mkCvt(OP_CVT, TYPE_U16, src, sTy, arrayIndex)->saturate = sat;
+      } else {
          bld.loadImm(src, 0);
+      }
 
       if (ticRel) {
          i->setSrc(i->tex.rIndirectSrc, NULL);
@@ -657,13 +660,7 @@ NVC0LoweringPass::checkPredicate(Instruction *insn)
 bool
 NVC0LoweringPass::visit(Instruction *i)
 {
-   if (i->prev)
-      bld.setPosition(i->prev, true);
-   else
-   if (i->next)
-      bld.setPosition(i->next, false);
-   else
-      bld.setPosition(i->bb, true);
+   bld.setPosition(i, false);
 
    if (i->cc != CC_ALWAYS)
       checkPredicate(i);
@@ -705,11 +702,6 @@ NVC0LoweringPass::visit(Instruction *i)
          i->op = OP_VFETCH;
          assert(prog->getType() != Program::TYPE_FRAGMENT);
       }
-      break;
-   case OP_PINTERP:
-      if (i->getSrc(0)->reg.data.offset >= 0x280 &&
-          i->getSrc(0)->reg.data.offset <  0x2c0)
-         i->setInterpolate(i->getSampleMode() | NV50_IR_INTERP_SC);
       break;
    default:
       break;

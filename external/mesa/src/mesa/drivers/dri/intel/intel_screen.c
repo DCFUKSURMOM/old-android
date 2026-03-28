@@ -33,6 +33,8 @@
 #include "main/hash.h"
 #include "main/fbobject.h"
 #include "main/mfeatures.h"
+#include "main/version.h"
+#include "swrast/s_renderbuffer.h"
 
 #include "utils.h"
 #include "xmlpool.h"
@@ -72,20 +74,26 @@ PUBLIC const char __driConfigOptions[] =
      DRI_CONF_NO_RAST(false)
      DRI_CONF_ALWAYS_FLUSH_BATCH(false)
      DRI_CONF_ALWAYS_FLUSH_CACHE(false)
+     DRI_CONF_FORCE_GLSL_EXTENSIONS_WARN(false)
 
       DRI_CONF_OPT_BEGIN(stub_occlusion_query, bool, false)
 	 DRI_CONF_DESC(en, "Enable stub ARB_occlusion_query support on 915/945.")
       DRI_CONF_OPT_END
+
+      DRI_CONF_OPT_BEGIN(shader_precompile, bool, false)
+	 DRI_CONF_DESC(en, "Perform code generation at shader link time.")
+      DRI_CONF_OPT_END
    DRI_CONF_SECTION_END
 DRI_CONF_END;
 
-const GLuint __driNConfigOptions = 11;
+const GLuint __driNConfigOptions = 13;
 
 #include "intel_batchbuffer.h"
 #include "intel_buffers.h"
 #include "intel_bufmgr.h"
 #include "intel_chipset.h"
 #include "intel_fbo.h"
+#include "intel_mipmap_tree.h"
 #include "intel_screen.h"
 #include "intel_tex.h"
 #include "intel_regions.h"
@@ -107,6 +115,8 @@ intelDRI2Flush(__DRIdrawable *drawable)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct intel_context *intel = intel_context(ctx);
+   if (intel == NULL)
+      return;
 
    if (intel->gen < 4)
       INTEL_FIREVERTICES(intel);
@@ -199,9 +209,9 @@ intel_create_image_from_renderbuffer(__DRIcontext *context,
 
    image->internal_format = rb->InternalFormat;
    image->format = rb->Format;
-   image->data_type = rb->DataType;
+   image->data_type = GL_UNSIGNED_BYTE;
    image->data = loaderPrivate;
-   intel_region_reference(&image->region, irb->region);
+   intel_region_reference(&image->region, irb->mt->region);
 
    return image;
 }
@@ -416,11 +426,11 @@ intelCreateBuffer(__DRIscreen * driScrnPriv,
 
       /* setup the hardware-based renderbuffers */
       rb = intel_create_renderbuffer(rgbFormat);
-      _mesa_add_renderbuffer(fb, BUFFER_FRONT_LEFT, &rb->Base);
+      _mesa_add_renderbuffer(fb, BUFFER_FRONT_LEFT, &rb->Base.Base);
 
       if (mesaVis->doubleBufferMode) {
 	 rb = intel_create_renderbuffer(rgbFormat);
-         _mesa_add_renderbuffer(fb, BUFFER_BACK_LEFT, &rb->Base);
+         _mesa_add_renderbuffer(fb, BUFFER_BACK_LEFT, &rb->Base.Base);
       }
 
       /*
@@ -439,17 +449,17 @@ intelCreateBuffer(__DRIscreen * driScrnPriv,
 	     * enum intel_dri2_has_hiz).
 	     */
 	    rb = intel_create_renderbuffer(MESA_FORMAT_X8_Z24);
-	    _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &rb->Base);
+	    _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &rb->Base.Base);
 	    rb = intel_create_renderbuffer(MESA_FORMAT_S8);
-	    _mesa_add_renderbuffer(fb, BUFFER_STENCIL, &rb->Base);
+	    _mesa_add_renderbuffer(fb, BUFFER_STENCIL, &rb->Base.Base);
 	 } else {
 	    /*
 	     * Use combined depth/stencil. Note that the renderbuffer is
 	     * attached to two attachment points.
 	     */
 	    rb = intel_create_renderbuffer(MESA_FORMAT_S8_Z24);
-	    _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &rb->Base);
-	    _mesa_add_renderbuffer(fb, BUFFER_STENCIL, &rb->Base);
+	    _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &rb->Base.Base);
+	    _mesa_add_renderbuffer(fb, BUFFER_STENCIL, &rb->Base.Base);
 	 }
       }
       else if (mesaVis->depthBits == 16) {
@@ -457,7 +467,7 @@ intelCreateBuffer(__DRIscreen * driScrnPriv,
          /* just 16-bit depth buffer, no hw stencil */
          struct intel_renderbuffer *depthRb
 	    = intel_create_renderbuffer(MESA_FORMAT_Z16);
-         _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &depthRb->Base);
+         _mesa_add_renderbuffer(fb, BUFFER_DEPTH, &depthRb->Base.Base);
       }
       else {
 	 assert(mesaVis->depthBits == 0);
@@ -465,13 +475,13 @@ intelCreateBuffer(__DRIscreen * driScrnPriv,
       }
 
       /* now add any/all software-based renderbuffers we may need */
-      _mesa_add_soft_renderbuffers(fb,
-                                   false, /* never sw color */
-                                   false, /* never sw depth */
-                                   false, /* never sw stencil */
-                                   mesaVis->accumRedBits > 0,
-                                   false, /* never sw alpha */
-                                   false  /* never sw aux */ );
+      _swrast_add_soft_renderbuffers(fb,
+                                     false, /* never sw color */
+                                     false, /* never sw depth */
+                                     false, /* never sw stencil */
+                                     mesaVis->accumRedBits > 0,
+                                     false, /* never sw alpha */
+                                     false  /* never sw aux */ );
       driDrawPriv->driverPrivate = fb;
 
       return true;
@@ -510,27 +520,52 @@ static GLboolean
 intelCreateContext(gl_api api,
 		   const struct gl_config * mesaVis,
                    __DRIcontext * driContextPriv,
+		   unsigned major_version,
+		   unsigned minor_version,
+		   uint32_t flags,
+		   unsigned *error,
                    void *sharedContextPrivate)
 {
    __DRIscreen *sPriv = driContextPriv->driScreenPriv;
    struct intel_screen *intelScreen = sPriv->driverPrivate;
+   bool success = false;
 
 #ifdef I915
    if (IS_9XX(intelScreen->deviceID)) {
       if (!IS_965(intelScreen->deviceID)) {
-	 return i915CreateContext(api, mesaVis, driContextPriv,
-				  sharedContextPrivate);
+	 success = i915CreateContext(api, mesaVis, driContextPriv,
+				     sharedContextPrivate);
       }
    } else {
       intelScreen->no_vbo = true;
-      return i830CreateContext(mesaVis, driContextPriv, sharedContextPrivate);
+      success = i830CreateContext(mesaVis, driContextPriv,
+				  sharedContextPrivate);
    }
 #else
    if (IS_965(intelScreen->deviceID))
-      return brwCreateContext(api, mesaVis,
-			      driContextPriv, sharedContextPrivate);
+      success = brwCreateContext(api, mesaVis,
+			      driContextPriv,
+			      sharedContextPrivate);
 #endif
-   fprintf(stderr, "Unrecognized deviceID 0x%x\n", intelScreen->deviceID);
+
+   if (success) {
+      struct gl_context *ctx =
+	 (struct gl_context *) driContextPriv->driverPrivate;
+
+      _mesa_compute_version(ctx);
+      if (ctx->VersionMajor > major_version
+	  || (ctx->VersionMajor == major_version
+	      && ctx->VersionMinor >= minor_version)) {
+	 *error = __DRI_CTX_ERROR_BAD_VERSION;
+	 return true;
+      }
+
+      intelDestroyContext(driContextPriv);
+   } else {
+      *error = __DRI_CTX_ERROR_NO_MEMORY;
+      fprintf(stderr, "Unrecognized deviceID 0x%x\n", intelScreen->deviceID);
+   }
+
    return false;
 }
 
@@ -615,6 +650,30 @@ intel_override_separate_stencil(struct intel_screen *screen)
    }
 }
 
+static bool
+intel_detect_swizzling(struct intel_screen *screen)
+{
+   drm_intel_bo *buffer;
+   unsigned long flags = 0;
+   unsigned long aligned_pitch;
+   uint32_t tiling = I915_TILING_X;
+   uint32_t swizzle_mode = 0;
+
+   buffer = drm_intel_bo_alloc_tiled(screen->bufmgr, "swizzle test",
+				     64, 64, 4,
+				     &tiling, &aligned_pitch, flags);
+   if (buffer == NULL)
+      return false;
+
+   drm_intel_bo_get_tiling(buffer, &tiling, &swizzle_mode);
+   drm_intel_bo_unreference(buffer);
+
+   if (swizzle_mode == I915_BIT_6_SWIZZLE_NONE)
+      return false;
+   else
+      return true;
+}
+
 /**
  * This is the driver specific part of the createNewScreen entry point.
  * Called when using DRI2.
@@ -665,6 +724,10 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
       intelScreen->deviceID = strtod(devid_override, NULL);
    }
 
+   intelScreen->kernel_has_gen7_sol_reset =
+      intel_get_boolean(intelScreen->driScrnPriv,
+			I915_PARAM_HAS_GEN7_SOL_RESET);
+
    if (IS_GEN7(intelScreen->deviceID)) {
       intelScreen->gen = 7;
    } else if (IS_GEN6(intelScreen->deviceID)) {
@@ -679,14 +742,18 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
       intelScreen->gen = 2;
    }
 
-   /*
-    * FIXME: The hiz and separate stencil fields need updating once the
-    * FIXME: features are completely implemented for a given chipset.
-    */
-   intelScreen->hw_has_separate_stencil = intelScreen->gen >= 7;
+   intelScreen->hw_has_separate_stencil = intelScreen->gen >= 6;
    intelScreen->hw_must_use_separate_stencil = intelScreen->gen >= 7;
-   intelScreen->hw_has_hiz = false;
+   intelScreen->hw_has_hiz = intelScreen->gen >= 6;
    intelScreen->dri2_has_hiz = INTEL_DRI2_HAS_HIZ_UNKNOWN;
+
+#if defined(I915_PARAM_HAS_LLC)
+   intelScreen->hw_has_llc =
+      intel_get_boolean(intelScreen->driScrnPriv,
+              I915_PARAM_HAS_LLC);
+#else
+   intelScreen->hw_has_llc = intelScreen->gen >= 6;
+#endif
 
    intel_override_hiz(intelScreen);
    intel_override_separate_stencil(intelScreen);
@@ -704,6 +771,8 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
 
    if (!intel_init_bufmgr(intelScreen))
        return false;
+
+   intelScreen->hw_has_swizzling = intel_detect_swizzling(intelScreen);
 
    psp->extensions = intelScreenExtensions;
 
@@ -796,6 +865,54 @@ struct intel_buffer {
    struct intel_region *region;
 };
 
+/**
+ * \brief Get tiling format for a DRI buffer.
+ *
+ * \param attachment is the buffer's attachmet point, such as
+ *        __DRI_BUFFER_DEPTH.
+ * \param out_tiling is the returned tiling format for buffer.
+ * \return false if attachment is unrecognized or is incompatible with screen.
+ */
+static bool
+intel_get_dri_buffer_tiling(struct intel_screen *screen,
+                            uint32_t attachment,
+                            uint32_t *out_tiling)
+{
+   if (screen->gen < 4) {
+      *out_tiling = I915_TILING_X;
+      return true;
+   }
+
+   switch (attachment) {
+   case __DRI_BUFFER_DEPTH:
+   case __DRI_BUFFER_DEPTH_STENCIL:
+   case __DRI_BUFFER_HIZ:
+      *out_tiling = I915_TILING_Y;
+      return true;
+   case __DRI_BUFFER_ACCUM:
+   case __DRI_BUFFER_FRONT_LEFT:
+   case __DRI_BUFFER_FRONT_RIGHT:
+   case __DRI_BUFFER_BACK_LEFT:
+   case __DRI_BUFFER_BACK_RIGHT:
+   case __DRI_BUFFER_FAKE_FRONT_LEFT:
+   case __DRI_BUFFER_FAKE_FRONT_RIGHT:
+      *out_tiling = I915_TILING_X;
+      return true;
+   case __DRI_BUFFER_STENCIL:
+      /* The stencil buffer is W tiled. However, we request from the kernel
+       * a non-tiled buffer because the GTT is incapable of W fencing.
+       */
+      *out_tiling = I915_TILING_NONE;
+      return true;
+   default:
+      if(unlikely(INTEL_DEBUG & DEBUG_DRI)) {
+	 fprintf(stderr, "error: %s: unrecognized DRI buffer attachment 0x%x\n",
+	         __FUNCTION__, attachment);
+      }
+       return false;
+   }
+}
+
 static __DRIbuffer *
 intelAllocateBuffer(__DRIscreen *screen,
 		    unsigned attachment, unsigned format,
@@ -803,22 +920,45 @@ intelAllocateBuffer(__DRIscreen *screen,
 {
    struct intel_buffer *intelBuffer;
    struct intel_screen *intelScreen = screen->driverPrivate;
+
    uint32_t tiling;
+   uint32_t region_width;
+   uint32_t region_height;
+   uint32_t region_cpp;
+
+   bool ok = true;
+
+   ok = intel_get_dri_buffer_tiling(intelScreen, attachment, &tiling);
+   if (!ok)
+      return NULL;
 
    intelBuffer = CALLOC(sizeof *intelBuffer);
    if (intelBuffer == NULL)
       return NULL;
 
-   if ((attachment == __DRI_BUFFER_DEPTH ||
-	attachment == __DRI_BUFFER_STENCIL ||
-	attachment == __DRI_BUFFER_DEPTH_STENCIL) &&
-       intelScreen->gen >= 4)
-      tiling = I915_TILING_Y;
-   else
-      tiling = I915_TILING_X;
+   if (attachment == __DRI_BUFFER_STENCIL) {
+      /* The stencil buffer has quirky pitch requirements.  From Vol 2a,
+       * 11.5.6.2.1 3DSTATE_STENCIL_BUFFER, field "Surface Pitch":
+       *    The pitch must be set to 2x the value computed based on width, as
+       *    the stencil buffer is stored with two rows interleaved.
+       * To accomplish this, we resort to the nasty hack of doubling the
+       * region's cpp and halving its height.
+       */
+      region_width = ALIGN(width, 64);
+      region_height = ALIGN(ALIGN(height, 2) / 2, 64);
+      region_cpp = format / 4;
+   } else {
+      region_width = width;
+      region_height = height;
+      region_cpp = format / 8;
+   }
 
-   intelBuffer->region = intel_region_alloc(intelScreen, tiling,
-					    format / 8, width, height, true);
+   intelBuffer->region = intel_region_alloc(intelScreen,
+                                            tiling,
+                                            region_cpp,
+                                            region_width,
+                                            region_height,
+                                            true);
    
    if (intelBuffer->region == NULL) {
 	   FREE(intelBuffer);

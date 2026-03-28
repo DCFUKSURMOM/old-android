@@ -236,6 +236,17 @@ uint32_t r300_translate_texformat(enum pipe_format format,
         return R300_TX_FORMAT_CxV8U8 | result;
     }
 
+    /* Integer and fixed-point 16.16 textures are not supported. */
+    for (i = 0; i < 4; i++) {
+        if (desc->channel[i].type == UTIL_FORMAT_TYPE_FIXED ||
+            ((desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED ||
+              desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED) &&
+             (!desc->channel[i].normalized ||
+              desc->channel[i].pure_integer))) {
+            return ~0; /* Unsupported/unknown. */
+        }
+    }
+
     /* Add sign. */
     for (i = 0; i < desc->nr_channels; i++) {
         if (desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED) {
@@ -711,7 +722,10 @@ boolean r300_is_sampler_format_supported(enum pipe_format format)
 
 void r300_texture_setup_format_state(struct r300_screen *screen,
                                      struct r300_resource *tex,
+                                     enum pipe_format format,
                                      unsigned level,
+                                     unsigned width0_override,
+                                     unsigned height0_override,
                                      struct r300_texture_format_state *out)
 {
     struct pipe_resource *pt = &tex->b.b.b;
@@ -720,8 +734,8 @@ void r300_texture_setup_format_state(struct r300_screen *screen,
     unsigned width, height, depth;
     unsigned txwidth, txheight, txdepth;
 
-    width = u_minify(desc->width0, level);
-    height = u_minify(desc->height0, level);
+    width = u_minify(width0_override, level);
+    height = u_minify(height0_override, level);
     depth = u_minify(desc->depth0, level);
 
     txwidth = (width - 1) & 0x7ff;
@@ -741,9 +755,11 @@ void r300_texture_setup_format_state(struct r300_screen *screen,
         R300_TX_DEPTH(txdepth);
 
     if (desc->uses_stride_addressing) {
+        unsigned stride =
+            r300_stride_to_width(format, desc->stride_in_bytes[level]);
         /* rectangles love this */
         out->format0 |= R300_TX_PITCH_EN;
-        out->format2 = (desc->stride_in_pixels[level] - 1) & 0x1fff;
+        out->format2 = (stride - 1) & 0x1fff;
     }
 
     if (pt->target == PIPE_TEXTURE_CUBE) {
@@ -792,11 +808,13 @@ static void r300_texture_setup_fb_state(struct r300_surface *surf)
 {
     struct r300_resource *tex = r300_resource(surf->base.texture);
     unsigned level = surf->base.u.tex.level;
+    unsigned stride =
+      r300_stride_to_width(surf->base.format, tex->tex.stride_in_bytes[level]);
 
     /* Set framebuffer state. */
     if (util_format_is_depth_or_stencil(surf->base.format)) {
         surf->pitch =
-                tex->tex.stride_in_pixels[level] |
+                stride |
                 R300_DEPTHMACROTILE(tex->tex.macrotile[level]) |
                 R300_DEPTHMICROTILE(tex->tex.microtile);
         surf->format = r300_translate_zsformat(surf->base.format);
@@ -804,28 +822,12 @@ static void r300_texture_setup_fb_state(struct r300_surface *surf)
         surf->pitch_hiz = tex->tex.hiz_stride_in_pixels[level];
     } else {
         surf->pitch =
-                tex->tex.stride_in_pixels[level] |
+                stride |
                 r300_translate_colorformat(surf->base.format) |
                 R300_COLOR_TILE(tex->tex.macrotile[level]) |
                 R300_COLOR_MICROTILE(tex->tex.microtile);
         surf->format = r300_translate_out_fmt(surf->base.format);
     }
-}
-
-void r300_resource_set_properties(struct pipe_screen *screen,
-                                  struct pipe_resource *tex,
-                                  const struct pipe_resource *new_properties)
-{
-    struct r300_screen *rscreen = r300_screen(screen);
-    struct r300_resource *res = r300_resource(tex);
-
-    SCREEN_DBG(rscreen, DBG_TEX,
-        "r300: texture_set_properties: %s -> %s\n",
-        util_format_short_name(tex->format),
-        util_format_short_name(new_properties->format));
-
-    r300_texture_desc_init(rscreen, res, new_properties);
-    r300_texture_setup_format_state(rscreen, res, 0, &res->tx_format);
 }
 
 static void r300_texture_destroy(struct pipe_screen *screen,
@@ -890,14 +892,17 @@ r300_texture_create_object(struct r300_screen *rscreen,
     tex->tex.microtile = microtile;
     tex->tex.macrotile[0] = macrotile;
     tex->tex.stride_in_bytes_override = stride_in_bytes_override;
+    tex->domain = base->flags & R300_RESOURCE_FLAG_TRANSFER ?
+                  RADEON_DOMAIN_GTT :
+                  RADEON_DOMAIN_VRAM | RADEON_DOMAIN_GTT;
     tex->buf = buffer;
 
-    r300_resource_set_properties(&rscreen->screen, &tex->b.b.b, base);
+    r300_texture_desc_init(rscreen, tex, base);
 
     /* Create the backing buffer if needed. */
     if (!tex->buf) {
         tex->buf = rws->buffer_create(rws, tex->tex.size_in_bytes, 2048,
-                                      base->bind, base->usage);
+                                      base->bind, tex->domain);
 
         if (!tex->buf) {
             FREE(tex);
@@ -981,9 +986,11 @@ struct pipe_resource *r300_texture_from_handle(struct pipe_screen *screen,
 
 /* Not required to implement u_resource_vtbl, consider moving to another file:
  */
-struct pipe_surface* r300_create_surface(struct pipe_context * ctx,
+struct pipe_surface* r300_create_surface_custom(struct pipe_context * ctx,
                                          struct pipe_resource* texture,
-                                         const struct pipe_surface *surf_tmpl)
+                                         const struct pipe_surface *surf_tmpl,
+                                         unsigned width0_override,
+					 unsigned height0_override)
 {
     struct r300_resource* tex = r300_resource(texture);
     struct r300_surface* surface = CALLOC_STRUCT(r300_surface);
@@ -998,8 +1005,8 @@ struct pipe_surface* r300_create_surface(struct pipe_context * ctx,
         pipe_resource_reference(&surface->base.texture, texture);
         surface->base.context = ctx;
         surface->base.format = surf_tmpl->format;
-        surface->base.width = u_minify(texture->width0, level);
-        surface->base.height = u_minify(texture->height0, level);
+        surface->base.width = u_minify(width0_override, level);
+        surface->base.height = u_minify(height0_override, level);
         surface->base.usage = surf_tmpl->usage;
         surface->base.u.tex.level = level;
         surface->base.u.tex.first_layer = surf_tmpl->u.tex.first_layer;
@@ -1007,6 +1014,11 @@ struct pipe_surface* r300_create_surface(struct pipe_context * ctx,
 
         surface->buf = tex->buf;
         surface->cs_buf = tex->cs_buf;
+
+        /* Prefer VRAM if there are multiple domains to choose from. */
+        surface->domain = tex->domain;
+        if (surface->domain & RADEON_DOMAIN_VRAM)
+            surface->domain &= ~RADEON_DOMAIN_GTT;
 
         surface->offset = r300_texture_get_offset(tex, level,
                                                   surf_tmpl->u.tex.first_layer);
@@ -1017,7 +1029,7 @@ struct pipe_surface* r300_create_surface(struct pipe_context * ctx,
         surface->cbzb_width = align(surface->base.width, 64);
 
         /* Height must be aligned to the size of a tile. */
-        tile_height = r300_get_pixel_alignment(tex->b.b.b.format,
+        tile_height = r300_get_pixel_alignment(surface->base.format,
                                                tex->b.b.b.nr_samples,
                                                tex->tex.microtile,
                                                tex->tex.macrotile[level],
@@ -1049,6 +1061,15 @@ struct pipe_surface* r300_create_surface(struct pipe_context * ctx,
     }
 
     return &surface->base;
+}
+
+struct pipe_surface* r300_create_surface(struct pipe_context * ctx,
+                                         struct pipe_resource* texture,
+                                         const struct pipe_surface *surf_tmpl)
+{
+    return r300_create_surface_custom(ctx, texture, surf_tmpl,
+                                      texture->width0,
+                                      texture->height0);
 }
 
 /* Not required to implement u_resource_vtbl, consider moving to another file:

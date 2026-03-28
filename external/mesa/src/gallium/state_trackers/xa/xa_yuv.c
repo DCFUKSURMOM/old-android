@@ -99,13 +99,13 @@ xa_yuv_bind_samplers(struct xa_context *r, struct xa_surface *yuv[])
 static void
 xa_yuv_fs_constants(struct xa_context *r, const float conversion_matrix[])
 {
-    const int param_bytes = 12 * sizeof(float);
+    const int param_bytes = 16 * sizeof(float);
 
     renderer_set_constants(r, PIPE_SHADER_FRAGMENT,
 			   conversion_matrix, param_bytes);
 }
 
-extern int
+XA_EXPORT int
 xa_yuv_planar_blit(struct xa_context *r,
 		   int src_x,
 		   int src_y,

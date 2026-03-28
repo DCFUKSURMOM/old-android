@@ -53,7 +53,7 @@ _mesa_bufferobj_mapped(const struct gl_buffer_object *obj)
 static inline GLboolean
 _mesa_is_bufferobj(const struct gl_buffer_object *obj)
 {
-   return obj->Name != 0;
+   return obj != NULL && obj->Name != 0;
 }
 
 
@@ -71,7 +71,8 @@ extern struct gl_buffer_object *
 _mesa_lookup_bufferobj(struct gl_context *ctx, GLuint buffer);
 
 extern void
-_mesa_initialize_buffer_object( struct gl_buffer_object *obj,
+_mesa_initialize_buffer_object( struct gl_context *ctx,
+				struct gl_buffer_object *obj,
 				GLuint name, GLenum target );
 
 extern void

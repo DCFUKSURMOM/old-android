@@ -355,7 +355,7 @@ static void brw_prepare_vertices(struct brw_context *brw)
    struct gl_context *ctx = &brw->intel.ctx;
    struct intel_context *intel = intel_context(ctx);
    /* CACHE_NEW_VS_PROG */
-   GLbitfield vs_inputs = brw->vs.prog_data->inputs_read;
+   GLbitfield64 vs_inputs = brw->vs.prog_data->inputs_read;
    const unsigned char *ptr = NULL;
    GLuint interleaved = 0, total_size = 0;
    unsigned int min_index = brw->vb.min_index;
@@ -373,10 +373,10 @@ static void brw_prepare_vertices(struct brw_context *brw)
    /* Accumulate the list of enabled arrays. */
    brw->vb.nr_enabled = 0;
    while (vs_inputs) {
-      GLuint i = ffs(vs_inputs) - 1;
+      GLuint i = ffsll(vs_inputs) - 1;
       struct brw_vertex_element *input = &brw->vb.inputs[i];
 
-      vs_inputs &= ~(1 << i);
+      vs_inputs &= ~BITFIELD64_BIT(i);
       if (input->glarray->Size && get_size(input->glarray->Type))
          brw->vb.enabled[brw->vb.nr_enabled++] = input;
    }
@@ -386,17 +386,6 @@ static void brw_prepare_vertices(struct brw_context *brw)
 
    if (brw->vb.nr_buffers)
       goto prepare;
-
-   /* XXX: In the rare cases where this happens we fallback all
-    * the way to software rasterization, although a tnl fallback
-    * would be sufficient.  I don't know of *any* real world
-    * cases with > 17 vertex attributes enabled, so it probably
-    * isn't an issue at this point.
-    */
-   if (brw->vb.nr_enabled >= BRW_VEP_MAX) {
-      intel->Fallback = true; /* boolean, not bitfield */
-      return;
-   }
 
    for (i = j = 0; i < brw->vb.nr_enabled; i++) {
       struct brw_vertex_element *input = brw->vb.enabled[i];
@@ -602,7 +591,7 @@ static void brw_emit_vertices(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->intel.ctx;
    struct intel_context *intel = intel_context(ctx);
-   GLuint i;
+   GLuint i, nr_elements;
 
    brw_prepare_vertices(brw);
 
@@ -641,6 +630,12 @@ static void brw_emit_vertices(struct brw_context *brw)
     */
 
    if (brw->vb.nr_buffers) {
+      if (intel->gen >= 6) {
+	 assert(brw->vb.nr_buffers <= 33);
+      } else {
+	 assert(brw->vb.nr_buffers <= 17);
+      }
+
       BEGIN_BATCH(1 + 4*brw->vb.nr_buffers);
       OUT_BATCH((_3DSTATE_VERTEX_BUFFERS << 16) | (4*brw->vb.nr_buffers - 1));
       for (i = 0; i < brw->vb.nr_buffers; i++) {
@@ -672,8 +667,19 @@ static void brw_emit_vertices(struct brw_context *brw)
       ADVANCE_BATCH();
    }
 
-   BEGIN_BATCH(1 + brw->vb.nr_enabled * 2);
-   OUT_BATCH((_3DSTATE_VERTEX_ELEMENTS << 16) | (2*brw->vb.nr_enabled - 1));
+   nr_elements = brw->vb.nr_enabled + brw->vs.prog_data->uses_vertexid;
+
+   /* The hardware allows one more VERTEX_ELEMENTS than VERTEX_BUFFERS, presumably
+    * for VertexID/InstanceID.
+    */
+   if (intel->gen >= 6) {
+      assert(nr_elements <= 34);
+   } else {
+      assert(nr_elements <= 18);
+   }
+
+   BEGIN_BATCH(1 + nr_elements * 2);
+   OUT_BATCH((_3DSTATE_VERTEX_ELEMENTS << 16) | (2 * nr_elements - 1));
    for (i = 0; i < brw->vb.nr_enabled; i++) {
       struct brw_vertex_element *input = brw->vb.enabled[i];
       uint32_t format = get_surface_type(input->glarray->Type,
@@ -719,6 +725,30 @@ static void brw_emit_vertices(struct brw_context *brw)
                     (comp3 << BRW_VE1_COMPONENT_3_SHIFT) |
                     ((i * 4) << BRW_VE1_DST_OFFSET_SHIFT));
    }
+
+   if (brw->vs.prog_data->uses_vertexid) {
+      uint32_t dw0 = 0, dw1 = 0;
+
+      dw1 = ((BRW_VE1_COMPONENT_STORE_VID << BRW_VE1_COMPONENT_0_SHIFT) |
+	     (BRW_VE1_COMPONENT_STORE_IID << BRW_VE1_COMPONENT_1_SHIFT) |
+	     (BRW_VE1_COMPONENT_STORE_PID << BRW_VE1_COMPONENT_2_SHIFT) |
+	     (BRW_VE1_COMPONENT_STORE_0 << BRW_VE1_COMPONENT_3_SHIFT));
+
+      if (intel->gen >= 6) {
+	 dw0 |= GEN6_VE0_VALID;
+      } else {
+	 dw0 |= BRW_VE0_VALID;
+	 dw1 |= (i * 4) << BRW_VE1_DST_OFFSET_SHIFT;
+      }
+
+      /* Note that for gl_VertexID, gl_InstanceID, and gl_PrimitiveID values,
+       * the format is ignored and the value is always int.
+       */
+
+      OUT_BATCH(dw0);
+      OUT_BATCH(dw1);
+   }
+
    CACHED_BATCH();
 }
 

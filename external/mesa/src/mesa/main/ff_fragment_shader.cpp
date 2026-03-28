@@ -42,6 +42,7 @@ extern "C" {
 #include "program/programopt.h"
 #include "texenvprogram.h"
 }
+#include "main/uniforms.h"
 #include "../glsl/glsl_types.h"
 #include "../glsl/ir.h"
 #include "../glsl/glsl_symbol_table.h"
@@ -334,7 +335,7 @@ static GLbitfield get_fp_input_mask( struct gl_context *ctx )
    else if (!(vertexProgram || vertexShader)) {
       /* Fixed function vertex logic */
       /* _NEW_ARRAY */
-      GLbitfield varying_inputs = ctx->varying_vp_inputs;
+      GLbitfield64 varying_inputs = ctx->varying_vp_inputs;
 
       /* These get generated in the setup routine regardless of the
        * vertex program:
@@ -489,6 +490,12 @@ static GLuint make_state_key( struct gl_context *ctx,  struct state_key *key )
    /* _NEW_BUFFERS */
    key->num_draw_buffers = ctx->DrawBuffer->_NumColorDrawBuffers;
 
+   /* _NEW_COLOR */
+   if (ctx->Color.AlphaEnabled && key->num_draw_buffers == 0) {
+      /* if alpha test is enabled we need to emit at least one color */
+      key->num_draw_buffers = 1;
+   }
+
    key->inputs_available = (inputs_available & inputs_referenced);
 
    /* compute size of state key, ignoring unused texture units */
@@ -521,7 +528,7 @@ struct texenv_fragment_program {
     */
 
    /* Texcoord override from bumpmapping. */
-   struct ir_variable *texcoord_tex[MAX_TEXTURE_COORD_UNITS];
+   ir_variable *texcoord_tex[MAX_TEXTURE_COORD_UNITS];
 
    /* Reg containing texcoord for a texture unit,
     * needed for bump mapping, else undef.
@@ -626,15 +633,19 @@ emit_combine_source(struct texenv_fragment_program *p,
 					   new(p->mem_ctx) ir_constant(1.0f),
 					   src);
 
-   case OPR_SRC_ALPHA: 
-      return new(p->mem_ctx) ir_swizzle(src, 3, 3, 3, 3, 1);
+   case OPR_SRC_ALPHA:
+      return src->type->is_scalar()
+	 ? src : (ir_rvalue *) new(p->mem_ctx) ir_swizzle(src, 3, 3, 3, 3, 1);
 
-   case OPR_ONE_MINUS_SRC_ALPHA: 
+   case OPR_ONE_MINUS_SRC_ALPHA: {
+      ir_rvalue *const scalar = (src->type->is_scalar())
+	 ? src : (ir_rvalue *) new(p->mem_ctx) ir_swizzle(src, 3, 3, 3, 3, 1);
+
       return new(p->mem_ctx) ir_expression(ir_binop_sub,
 					   new(p->mem_ctx) ir_constant(1.0f),
-					   new(p->mem_ctx) ir_swizzle(src,
-								      3, 3,
-								      3, 3, 1));
+					   scalar);
+   }
+
    case OPR_ZERO:
       return new(p->mem_ctx) ir_constant(0.0f);
    case OPR_ONE:
@@ -1488,25 +1499,48 @@ create_new_program(struct gl_context *ctx, struct state_key *key)
    /* Set the sampler uniforms, and relink to get them into the linked
     * program.
     */
-   struct gl_program *fp;
-   fp = p.shader_program->_LinkedShaders[MESA_SHADER_FRAGMENT]->Program;
+   struct gl_shader *const fs =
+      p.shader_program->_LinkedShaders[MESA_SHADER_FRAGMENT];
+   struct gl_program *const fp = fs->Program;
+
+   _mesa_generate_parameters_list_for_uniforms(p.shader_program, fs,
+					       fp->Parameters);
+
+   _mesa_associate_uniform_storage(ctx, p.shader_program, fp->Parameters);
 
    for (unsigned int i = 0; i < MAX_TEXTURE_UNITS; i++) {
-      char *name = ralloc_asprintf(p.mem_ctx, "sampler_%d", i);
+      /* Enough space for 'sampler_999\0'.
+       */
+      char name[12];
+
+      snprintf(name, sizeof(name), "sampler_%d", i);
+
       int loc = _mesa_get_uniform_location(ctx, p.shader_program, name);
       if (loc != -1) {
+	 unsigned base;
+	 unsigned idx;
+
 	 /* Avoid using _mesa_uniform() because it flags state
 	  * updates, so if we're generating this shader_program in a
 	  * state update, we end up recursing.  Instead, just set the
 	  * value, which is picked up at re-link.
 	  */
-	 loc = (loc & 0xffff) + (loc >> 16);
-	 int sampler = fp->Parameters->ParameterValues[loc][0].f;
+	 _mesa_uniform_split_location_offset(loc, &base, &idx);
+	 assert(idx == 0);
 
-	 fp->SamplerUnits[sampler] = i;
+	 struct gl_uniform_storage *const storage =
+	    &p.shader_program->UniformStorage[base];
+
+	 /* Update the storage, the SamplerUnits in the shader program, and
+	  * the SamplerUnits in the assembly shader.
+	  */
+	 storage->storage[idx].i = i;
+	 fp->SamplerUnits[storage->sampler] = i;
+	 p.shader_program->SamplerUnits[storage->sampler] = i;
+	 _mesa_propagate_uniforms_to_driver_storage(storage, 0, 1);
       }
    }
-   _mesa_update_shader_textures_used(fp);
+   _mesa_update_shader_textures_used(p.shader_program, fp);
    (void) ctx->Driver.ProgramStringNotify(ctx, fp->Target, fp);
 
    if (!p.shader_program->LinkStatus)

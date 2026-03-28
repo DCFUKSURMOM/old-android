@@ -155,12 +155,12 @@ fs_visitor::implied_mrf_writes(fs_inst *inst)
    case SHADER_OPCODE_INT_QUOTIENT:
    case SHADER_OPCODE_INT_REMAINDER:
       return 2 * c->dispatch_width / 8;
-   case FS_OPCODE_TEX:
+   case SHADER_OPCODE_TEX:
    case FS_OPCODE_TXB:
-   case FS_OPCODE_TXD:
-   case FS_OPCODE_TXF:
-   case FS_OPCODE_TXL:
-   case FS_OPCODE_TXS:
+   case SHADER_OPCODE_TXD:
+   case SHADER_OPCODE_TXF:
+   case SHADER_OPCODE_TXL:
+   case SHADER_OPCODE_TXS:
       return 1;
    case FS_OPCODE_FB_WRITE:
       return 2;
@@ -491,17 +491,13 @@ fs_visitor::emit_general_interpolation(ir_variable *ir)
                   emit(FS_OPCODE_LINTERP, attr,
                        this->delta_x[barycoord_mode],
                        this->delta_y[barycoord_mode], fs_reg(interp));
+		  if (intel->gen < 6) {
+		     emit(BRW_OPCODE_MUL, attr, attr, this->pixel_w);
+		  }
 	       }
 	       attr.reg_offset++;
 	    }
 
-	    if (intel->gen < 6) {
-	       attr.reg_offset -= type->vector_elements;
-	       for (unsigned int k = 0; k < type->vector_elements; k++) {
-		  emit(BRW_OPCODE_MUL, attr, attr, this->pixel_w);
-		  attr.reg_offset++;
-	       }
-	    }
 	 }
 	 location++;
       }
@@ -559,10 +555,10 @@ fs_visitor::emit_math(enum opcode opcode, fs_reg dst, fs_reg src)
     * expanding that result out, but we would need to be careful with
     * masking.
     *
-    * The hardware ignores source modifiers (negate and abs) on math
+    * Gen 6 hardware ignores source modifiers (negate and abs) on math
     * instructions, so we also move to a temp to set those up.
     */
-   if (intel->gen >= 6 && (src.file == UNIFORM ||
+   if (intel->gen == 6 && (src.file == UNIFORM ||
 			   src.abs ||
 			   src.negate)) {
       fs_reg expanded = fs_reg(this, glsl_type::float_type);
@@ -596,7 +592,9 @@ fs_visitor::emit_math(enum opcode opcode, fs_reg dst, fs_reg src0, fs_reg src1)
       return NULL;
    }
 
-   if (intel->gen >= 6) {
+   if (intel->gen >= 7) {
+      inst = emit(opcode, dst, src0, src1);
+   } else if (intel->gen == 6) {
       /* Can't do hstride == 0 args to gen6 math, so expand it out.
        *
        * The hardware ignores source modifiers (negate and abs) on math
@@ -712,6 +710,15 @@ fs_visitor::calculate_urb_setup()
 	       urb_setup[fp_index] = urb_next++;
 	 }
       }
+
+      /*
+       * It's a FS only attribute, and we did interpolation for this attribute
+       * in SF thread. So, count it here, too.
+       *
+       * See compile_sf_prog() for more info.
+       */
+      if (brw->fragment_program->Base.InputsRead & BITFIELD64_BIT(FRAG_ATTRIB_PNTC))
+         urb_setup[FRAG_ATTRIB_PNTC] = urb_next++;
    }
 
    /* Each attribute is 4 setup channels, each of which is half a reg. */
@@ -1142,6 +1149,7 @@ fs_visitor::propagate_constants()
 	       break;
 
 	    case BRW_OPCODE_CMP:
+	    case BRW_OPCODE_IF:
 	       if (i == 1) {
 		  scan_inst->src[i] = inst->src[0];
 		  progress = true;
@@ -1845,6 +1853,9 @@ brw_wm_fs_emit(struct brw_context *brw, struct brw_wm_compile *c,
       prog->LinkStatus = false;
       ralloc_strcat(&prog->InfoLog, v.fail_msg);
 
+      _mesa_problem(NULL, "Failed to compile fragment shader: %s\n",
+		    v.fail_msg);
+
       return false;
    }
 
@@ -1902,10 +1913,10 @@ brw_fs_precompile(struct gl_context *ctx, struct gl_shader_program *prog)
 
    for (int i = 0; i < BRW_MAX_TEX_UNIT; i++) {
       if (fp->Base.ShadowSamplers & (1 << i))
-	 key.compare_funcs[i] = GL_LESS;
+	 key.tex.compare_funcs[i] = GL_LESS;
 
       /* FINISHME: depth compares might use (0,0,0,W) for example */
-      key.tex_swizzles[i] = SWIZZLE_XYZW;
+      key.tex.swizzles[i] = SWIZZLE_XYZW;
    }
 
    if (fp->Base.InputsRead & FRAG_BIT_WPOS) {

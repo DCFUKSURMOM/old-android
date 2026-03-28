@@ -210,10 +210,8 @@ struct GalliumD3D10BlendState : public GalliumD3D10BlendStateBase
 
 struct GalliumD3D11RasterizerState : public GalliumD3D11RasterizerStateBase
 {
-	bool depth_clamp;
-
-	GalliumD3D11RasterizerState(GalliumD3D11Screen* device, void* object, const D3D11_RASTERIZER_DESC& desc, bool depth_clamp)
-	: GalliumD3D11RasterizerStateBase(device, object, desc), depth_clamp(depth_clamp)
+	GalliumD3D11RasterizerState(GalliumD3D11Screen* device, void* object, const D3D11_RASTERIZER_DESC& desc)
+	: GalliumD3D11RasterizerStateBase(device, object, desc)
 	{}
 };
 
@@ -368,19 +366,40 @@ typedef GalliumD3D11TypedResource<ID3D11Texture3D, D3D11_TEXTURE3D_DESC, D3D11_R
 typedef GalliumD3D11TypedResource<ID3D11Buffer, D3D11_BUFFER_DESC, D3D11_RESOURCE_DIMENSION_BUFFER> GalliumD3D11BufferBase;
 
 #if API >= 11
-typedef GalliumD3D11BufferBase GalliumD3D11Buffer;
 typedef GalliumD3D11Texture1DBase GalliumD3D11Texture1D;
 typedef GalliumD3D11Texture2DBase GalliumD3D11Texture2D;
 typedef GalliumD3D11Texture3DBase GalliumD3D11Texture3D;
+
+struct GalliumD3D11Buffer : public GalliumD3D11BufferBase
+{
+	struct pipe_stream_output_target* so_target;
+
+	GalliumD3D11Buffer(GalliumD3D11Screen* device, struct pipe_resource* resource, const D3D11_BUFFER_DESC& desc, unsigned dxgi_usage)
+	: GalliumD3D11BufferBase(device, resource, desc, dxgi_usage), so_target(0)
+	{
+	}
+
+	~GalliumD3D11Buffer()
+	{
+		if(so_target)
+			pipe_so_target_reference(&so_target, NULL);
+	}
+};
 #else
 struct GalliumD3D10Buffer : public GalliumD3D10BufferBase
 {
+	struct pipe_stream_output_target *so_target;
+
 	GalliumD3D10Buffer(GalliumD3D10Screen* device, struct pipe_resource* resource, const D3D10_BUFFER_DESC& desc, unsigned dxgi_usage)
 	: GalliumD3D10BufferBase(device, resource, desc, dxgi_usage)
-	{}
+	{
+	}
 
 	~GalliumD3D10Buffer()
 	{
+		if(so_target)
+			pipe_so_target_reference(&so_target, NULL);
+
 		device->UnbindBuffer(this);
 	}
 

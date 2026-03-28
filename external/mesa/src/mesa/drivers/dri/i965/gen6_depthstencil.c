@@ -25,6 +25,7 @@
  *
  */
 
+#include "intel_fbo.h"
 #include "brw_context.h"
 #include "brw_state.h"
 
@@ -33,6 +34,10 @@ gen6_upload_depth_stencil_state(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->intel.ctx;
    struct gen6_depth_stencil_state *ds;
+   struct intel_renderbuffer *depth_irb;
+
+   /* _NEW_BUFFERS */
+   depth_irb = intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
 
    ds = brw_state_batch(brw, AUB_TRACE_DEPTH_STENCIL_STATE,
 			sizeof(*ds), 64,
@@ -77,8 +82,8 @@ gen6_upload_depth_stencil_state(struct brw_context *brw)
    }
 
    /* _NEW_DEPTH */
-   if (ctx->Depth.Test) {
-      ds->ds2.depth_test_enable = 1;
+   if (ctx->Depth.Test && depth_irb) {
+      ds->ds2.depth_test_enable = ctx->Depth.Test;
       ds->ds2.depth_test_func = intel_translate_compare_func(ctx->Depth.Func);
       ds->ds2.depth_write_enable = ctx->Depth.Mask;
    }
@@ -88,8 +93,8 @@ gen6_upload_depth_stencil_state(struct brw_context *brw)
 
 const struct brw_tracked_state gen6_depth_stencil_state = {
    .dirty = {
-      .mesa = _NEW_DEPTH | _NEW_STENCIL,
-      .brw = BRW_NEW_BATCH,
+      .mesa = _NEW_DEPTH | _NEW_STENCIL | _NEW_BUFFERS,
+      .brw  = BRW_NEW_BATCH,
       .cache = 0,
    },
    .emit = gen6_upload_depth_stencil_state,

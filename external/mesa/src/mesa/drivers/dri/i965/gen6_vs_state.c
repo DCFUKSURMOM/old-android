@@ -117,7 +117,7 @@ gen6_upload_vs_push_constants(struct brw_context *brw)
    }
 }
 
-const struct brw_tracked_state gen6_vs_constants = {
+const struct brw_tracked_state gen6_vs_push_constants = {
    .dirty = {
       .mesa  = _NEW_TRANSFORM | _NEW_PROGRAM_CONSTANTS,
       .brw   = (BRW_NEW_BATCH |
@@ -132,6 +132,15 @@ upload_vs_state(struct brw_context *brw)
 {
    struct intel_context *intel = &brw->intel;
    uint32_t floating_point_mode = 0;
+
+   /* From the BSpec, Volume 2a, Part 3 "Vertex Shader", Section
+    * 3DSTATE_VS, Dword 5.0 "VS Function Enable":
+    *   [DevSNB] A pipeline flush must be programmed prior to a 3DSTATE_VS
+    *   command that causes the VS Function Enable to toggle. Pipeline
+    *   flush can be executed by sending a PIPE_CONTROL command with CS
+    *   stall bit set and a post sync operation.
+    */
+   intel_emit_post_sync_nonzero_flush(intel);
 
    if (brw->vs.push_const_size == 0) {
       /* Disable the push constant buffers. */
@@ -167,9 +176,8 @@ upload_vs_state(struct brw_context *brw)
    BEGIN_BATCH(6);
    OUT_BATCH(_3DSTATE_VS << 16 | (6 - 2));
    OUT_BATCH(brw->vs.prog_offset);
-   OUT_BATCH((0 << GEN6_VS_SAMPLER_COUNT_SHIFT) |
-             floating_point_mode |
-	     (brw->vs.nr_surfaces << GEN6_VS_BINDING_TABLE_ENTRY_COUNT_SHIFT));
+   OUT_BATCH(floating_point_mode |
+	     ((ALIGN(brw->sampler.count, 4)/4) << GEN6_VS_SAMPLER_COUNT_SHIFT));
 
    if (brw->vs.prog_data->total_scratch) {
       OUT_RELOC(brw->vs.scratch_bo,
@@ -220,12 +228,10 @@ upload_vs_state(struct brw_context *brw)
 const struct brw_tracked_state gen6_vs_state = {
    .dirty = {
       .mesa  = _NEW_TRANSFORM | _NEW_PROGRAM_CONSTANTS,
-      .brw   = (BRW_NEW_NR_VS_SURFACES |
-		BRW_NEW_URB_FENCE |
-		BRW_NEW_CONTEXT |
+      .brw   = (BRW_NEW_CONTEXT |
 		BRW_NEW_VERTEX_PROGRAM |
 		BRW_NEW_BATCH),
-      .cache = CACHE_NEW_VS_PROG
+      .cache = CACHE_NEW_VS_PROG | CACHE_NEW_SAMPLER
    },
    .emit = upload_vs_state,
 };

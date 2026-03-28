@@ -268,15 +268,16 @@ static LLVMTypeRef
 create_jit_vertex_header(struct gallivm_state *gallivm, int data_elems)
 {
    LLVMTargetDataRef target = gallivm->target;
-   LLVMTypeRef elem_types[3];
+   LLVMTypeRef elem_types[4];
    LLVMTypeRef vertex_header;
    char struct_name[24];
 
    util_snprintf(struct_name, 23, "vertex_header%d", data_elems);
 
-   elem_types[0]  = LLVMIntTypeInContext(gallivm->context, 32);
-   elem_types[1]  = LLVMArrayType(LLVMFloatTypeInContext(gallivm->context), 4);
-   elem_types[2]  = LLVMArrayType(elem_types[1], data_elems);
+   elem_types[DRAW_JIT_VERTEX_VERTEX_ID]  = LLVMIntTypeInContext(gallivm->context, 32);
+   elem_types[DRAW_JIT_VERTEX_CLIP]  = LLVMArrayType(LLVMFloatTypeInContext(gallivm->context), 4);
+   elem_types[DRAW_JIT_VERTEX_PRE_CLIP_POS]  = LLVMArrayType(LLVMFloatTypeInContext(gallivm->context), 4);
+   elem_types[DRAW_JIT_VERTEX_DATA]  = LLVMArrayType(elem_types[1], data_elems);
 
 #if HAVE_LLVM >= 0x0300
    vertex_header = LLVMStructCreateNamed(gallivm->context, struct_name);
@@ -307,6 +308,9 @@ create_jit_vertex_header(struct gallivm_state *gallivm, int data_elems)
    LP_CHECK_MEMBER_OFFSET(struct vertex_header, clip,
                           target, vertex_header,
                           DRAW_JIT_VERTEX_CLIP);
+   LP_CHECK_MEMBER_OFFSET(struct vertex_header, pre_clip_pos,
+                          target, vertex_header,
+                          DRAW_JIT_VERTEX_PRE_CLIP_POS);
    LP_CHECK_MEMBER_OFFSET(struct vertex_header, data,
                           target, vertex_header,
                           DRAW_JIT_VERTEX_DATA);
@@ -881,7 +885,8 @@ convert_to_aos(struct gallivm_state *gallivm,
 static void
 store_clip(struct gallivm_state *gallivm,
            LLVMValueRef io_ptr,           
-           LLVMValueRef (*outputs)[NUM_CHANNELS])
+           LLVMValueRef (*outputs)[NUM_CHANNELS],
+           boolean pre_clip_pos)
 {
    LLVMBuilderRef builder = gallivm->builder;
    LLVMValueRef out[4];
@@ -910,10 +915,18 @@ store_clip(struct gallivm_state *gallivm,
    io2_ptr = LLVMBuildGEP(builder, io_ptr, &ind2, 1, "");
    io3_ptr = LLVMBuildGEP(builder, io_ptr, &ind3, 1, "");
 
-   clip_ptr0 = draw_jit_header_clip(gallivm, io0_ptr);
-   clip_ptr1 = draw_jit_header_clip(gallivm, io1_ptr);
-   clip_ptr2 = draw_jit_header_clip(gallivm, io2_ptr);
-   clip_ptr3 = draw_jit_header_clip(gallivm, io3_ptr);
+   /* FIXME: this needs updating for clip vertex support */
+   if (!pre_clip_pos) {
+      clip_ptr0 = draw_jit_header_clip(gallivm, io0_ptr);
+      clip_ptr1 = draw_jit_header_clip(gallivm, io1_ptr);
+      clip_ptr2 = draw_jit_header_clip(gallivm, io2_ptr);
+      clip_ptr3 = draw_jit_header_clip(gallivm, io3_ptr);
+   } else {
+      clip_ptr0 = draw_jit_header_pre_clip_pos(gallivm, io0_ptr);
+      clip_ptr1 = draw_jit_header_pre_clip_pos(gallivm, io1_ptr);
+      clip_ptr2 = draw_jit_header_pre_clip_pos(gallivm, io2_ptr);
+      clip_ptr3 = draw_jit_header_pre_clip_pos(gallivm, io3_ptr);
+   }
 
    for (i = 0; i<4; i++) {
       clip0_ptr = LLVMBuildGEP(builder, clip_ptr0, indices, 2, ""); /* x0 */
@@ -1021,7 +1034,7 @@ generate_clipmask(struct gallivm_state *gallivm,
                   boolean clip_z,
                   boolean clip_user,
                   boolean clip_halfz,
-                  unsigned nr,
+                  unsigned ucp_enable,
                   LLVMValueRef context_ptr)
 {
    LLVMBuilderRef builder = gallivm->builder;
@@ -1030,7 +1043,6 @@ generate_clipmask(struct gallivm_state *gallivm,
    LLVMValueRef zero, shift;
    LLVMValueRef pos_x, pos_y, pos_z, pos_w;
    LLVMValueRef plane1, planes, plane_ptr, sum;
-   unsigned i;
    struct lp_type f32_type = lp_type_float_vec(32); 
 
    mask = lp_build_const_int_vec(gallivm, lp_type_int_vec(32), 0);
@@ -1098,12 +1110,15 @@ generate_clipmask(struct gallivm_state *gallivm,
    if (clip_user) {
       LLVMValueRef planes_ptr = draw_jit_context_planes(gallivm, context_ptr);
       LLVMValueRef indices[3];
-      temp = lp_build_const_int_vec(gallivm, lp_type_int_vec(32), 32);
 
       /* userclip planes */
-      for (i = 6; i < nr; i++) {
+      while (ucp_enable) {
+         unsigned plane_idx = ffs(ucp_enable)-1;
+         ucp_enable &= ~(1 << plane_idx);
+         plane_idx += 6;
+
          indices[0] = lp_build_const_int32(gallivm, 0);
-         indices[1] = lp_build_const_int32(gallivm, i);
+         indices[1] = lp_build_const_int32(gallivm, plane_idx);
 
          indices[2] = lp_build_const_int32(gallivm, 0);
          plane_ptr = LLVMBuildGEP(builder, planes_ptr, indices, 3, "");
@@ -1133,8 +1148,8 @@ generate_clipmask(struct gallivm_state *gallivm,
          sum = LLVMBuildFAdd(builder, sum, test, "");
 
          test = lp_build_compare(gallivm, f32_type, PIPE_FUNC_GREATER, zero, sum);
-         temp = LLVMBuildShl(builder, temp, shift, "");
-         test = LLVMBuildAnd(builder, test, temp, ""); 
+         temp = lp_build_const_int_vec(gallivm, lp_type_int_vec(32), 1 << plane_idx);
+         test = LLVMBuildAnd(builder, test, temp, "");
          mask = LLVMBuildOr(builder, mask, test, "");
       }
    }
@@ -1251,12 +1266,14 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant,
       fetch_count  = LLVMGetParam(variant_func, 4);
       lp_build_name(fetch_elts, "fetch_elts");
       lp_build_name(fetch_count, "fetch_count");
+      start = count = NULL;
    }
    else {
       start        = LLVMGetParam(variant_func, 3);
       count        = LLVMGetParam(variant_func, 4);
       lp_build_name(start, "start");
       lp_build_name(count, "count");
+      fetch_elts = fetch_count = NULL;
    }
 
    /*
@@ -1353,7 +1370,8 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant,
                   variant->key.clamp_vertex_color);
 
       /* store original positions in clip before further manipulation */
-      store_clip(gallivm, io, outputs);
+      store_clip(gallivm, io, outputs, 0);
+      store_clip(gallivm, io, outputs, 1);
 
       /* do cliptest */
       if (enable_cliptest) {
@@ -1363,7 +1381,7 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant,
                                       variant->key.clip_z, 
                                       variant->key.clip_user,
                                       variant->key.clip_halfz,
-                                      variant->key.nr_planes,
+                                      variant->key.ucp_enable,
                                       context_ptr);
          /* return clipping boolean value for function */
          clipmask_bool(gallivm, clipmask, ret_ptr);
@@ -1445,7 +1463,7 @@ draw_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
    key->bypass_viewport = llvm->draw->identity_viewport;
    key->clip_halfz = !llvm->draw->rasterizer->gl_rasterization_rules;
    key->need_edgeflags = (llvm->draw->vs.edgeflag_output ? TRUE : FALSE);
-   key->nr_planes = llvm->draw->nr_planes;
+   key->ucp_enable = llvm->draw->rasterizer->clip_plane_enable;
    key->pad = 0;
 
    /* All variants of this shader will have the same value for

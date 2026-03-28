@@ -25,6 +25,7 @@
 extern "C" {
 #include "main/macros.h"
 #include "program/prog_parameter.h"
+#include "program/sampler.h"
 }
 
 namespace brw {
@@ -880,6 +881,27 @@ vec4_visitor::visit(ir_variable *ir)
       }
       break;
 
+   case ir_var_system_value:
+      /* VertexID is stored by the VF as the last vertex element, but
+       * we don't represent it with a flag in inputs_read, so we call
+       * it VERT_ATTRIB_MAX, which setup_attributes() picks up on.
+       */
+      reg = new(mem_ctx) dst_reg(ATTR, VERT_ATTRIB_MAX);
+      prog_data->uses_vertexid = true;
+
+      switch (ir->location) {
+      case SYSTEM_VALUE_VERTEX_ID:
+	 reg->writemask = WRITEMASK_X;
+	 break;
+      case SYSTEM_VALUE_INSTANCE_ID:
+	 reg->writemask = WRITEMASK_Y;
+	 break;
+      default:
+	 assert(!"not reached");
+	 break;
+      }
+      break;
+
    default:
       assert(!"not reached");
    }
@@ -1510,9 +1532,6 @@ vec4_visitor::emit_block_move(dst_reg *dst, src_reg *src,
 
    dst->writemask = (1 << type->vector_elements) - 1;
 
-   /* Do we need to worry about swizzling a swizzle? */
-   assert(src->swizzle == BRW_SWIZZLE_NOOP
-	  || src->swizzle == swizzle_for_size(type->vector_elements));
    src->swizzle = swizzle_for_size(type->vector_elements);
 
    vec4_instruction *inst = emit(MOV(*dst, *src));
@@ -1594,6 +1613,15 @@ vec4_visitor::visit(ir_assignment *ir)
       if (ir->condition) {
 	 emit_bool_to_cond_code(ir->condition, &predicate);
       }
+
+      /* emit_block_move doesn't account for swizzles in the source register.
+       * This should be ok, since the source register is a structure or an
+       * array, and those can't be swizzled.  But double-check to be sure.
+       */
+      assert(src.swizzle ==
+             (ir->rhs->type->is_matrix()
+              ? swizzle_for_size(ir->rhs->type->vector_elements)
+              : BRW_SWIZZLE_NOOP));
 
       emit_block_move(&dst, &src, ir->rhs->type, predicate);
       return;
@@ -1679,21 +1707,44 @@ vec4_visitor::emit_constant_values(dst_reg *dst, ir_constant *ir)
 
    if (ir->type->is_matrix()) {
       for (int i = 0; i < ir->type->matrix_columns; i++) {
+	 float *vec = &ir->value.f[i * ir->type->vector_elements];
+
 	 for (int j = 0; j < ir->type->vector_elements; j++) {
 	    dst->writemask = 1 << j;
 	    dst->type = BRW_REGISTER_TYPE_F;
 
-	    emit(MOV(*dst,
-		     src_reg(ir->value.f[i * ir->type->vector_elements + j])));
+	    emit(MOV(*dst, src_reg(vec[j])));
 	 }
 	 dst->reg_offset++;
       }
       return;
    }
 
+   int remaining_writemask = (1 << ir->type->vector_elements) - 1;
+
    for (int i = 0; i < ir->type->vector_elements; i++) {
+      if (!(remaining_writemask & (1 << i)))
+	 continue;
+
       dst->writemask = 1 << i;
       dst->type = brw_type_for_base_type(ir->type);
+
+      /* Find other components that match the one we're about to
+       * write.  Emits fewer instructions for things like vec4(0.5,
+       * 1.5, 1.5, 1.5).
+       */
+      for (int j = i + 1; j < ir->type->vector_elements; j++) {
+	 if (ir->type->base_type == GLSL_TYPE_BOOL) {
+	    if (ir->value.b[i] == ir->value.b[j])
+	       dst->writemask |= (1 << j);
+	 } else {
+	    /* u, i, and f storage all line up, so no need for a
+	     * switch case for comparing each type.
+	     */
+	    if (ir->value.u[i] == ir->value.u[j])
+	       dst->writemask |= (1 << j);
+	 }
+      }
 
       switch (ir->type->base_type) {
       case GLSL_TYPE_FLOAT:
@@ -1712,6 +1763,8 @@ vec4_visitor::emit_constant_values(dst_reg *dst, ir_constant *ir)
 	 assert(!"Non-float/uint/int/bool constant");
 	 break;
       }
+
+      remaining_writemask &= ~dst->writemask;
    }
    dst->reg_offset++;
 }
@@ -1734,13 +1787,178 @@ vec4_visitor::visit(ir_call *ir)
 void
 vec4_visitor::visit(ir_texture *ir)
 {
-   /* FINISHME: Implement vertex texturing.
-    *
-    * With 0 vertex samplers available, the linker will reject
-    * programs that do vertex texturing, but after our visitor has
-    * run.
-    */
-   this->result = src_reg(this, glsl_type::vec4_type);
+   int sampler = _mesa_get_sampler_uniform_value(ir->sampler, prog, &vp->Base);
+   sampler = vp->Base.SamplerUnits[sampler];
+
+   /* Should be lowered by do_lower_texture_projection */
+   assert(!ir->projector);
+
+   vec4_instruction *inst = NULL;
+   switch (ir->op) {
+   case ir_tex:
+   case ir_txl:
+      inst = new(mem_ctx) vec4_instruction(this, SHADER_OPCODE_TXL);
+      break;
+   case ir_txd:
+      inst = new(mem_ctx) vec4_instruction(this, SHADER_OPCODE_TXD);
+      break;
+   case ir_txf:
+      inst = new(mem_ctx) vec4_instruction(this, SHADER_OPCODE_TXF);
+      break;
+   case ir_txs:
+      inst = new(mem_ctx) vec4_instruction(this, SHADER_OPCODE_TXS);
+      break;
+   case ir_txb:
+      assert(!"TXB is not valid for vertex shaders.");
+   }
+
+   /* Texel offsets go in the message header; Gen4 also requires headers. */
+   inst->header_present = ir->offset || intel->gen < 5;
+   inst->base_mrf = 2;
+   inst->mlen = inst->header_present + 1; /* always at least one */
+   inst->sampler = sampler;
+   inst->dst = dst_reg(this, ir->type);
+   inst->shadow_compare = ir->shadow_comparitor != NULL;
+
+   if (ir->offset != NULL)
+      inst->texture_offset = brw_texture_offset(ir->offset->as_constant());
+
+   /* MRF for the first parameter */
+   int param_base = inst->base_mrf + inst->header_present;
+
+   if (ir->op == ir_txs) {
+      ir->lod_info.lod->accept(this);
+      int writemask = intel->gen == 4 ? WRITEMASK_W : WRITEMASK_X;
+      emit(MOV(dst_reg(MRF, param_base, ir->lod_info.lod->type, writemask),
+	   this->result));
+   } else {
+      int i, coord_mask = 0, zero_mask = 0;
+      /* Load the coordinate */
+      /* FINISHME: gl_clamp_mask and saturate */
+      for (i = 0; i < ir->coordinate->type->vector_elements; i++)
+	 coord_mask |= (1 << i);
+      for (; i < 4; i++)
+	 zero_mask |= (1 << i);
+
+      ir->coordinate->accept(this);
+      emit(MOV(dst_reg(MRF, param_base, ir->coordinate->type, coord_mask),
+	       this->result));
+      emit(MOV(dst_reg(MRF, param_base, ir->coordinate->type, zero_mask),
+	       src_reg(0)));
+      /* Load the shadow comparitor */
+      if (ir->shadow_comparitor) {
+	 ir->shadow_comparitor->accept(this);
+	 emit(MOV(dst_reg(MRF, param_base + 1, ir->shadow_comparitor->type,
+			  WRITEMASK_X),
+		  this->result));
+	 inst->mlen++;
+      }
+
+      /* Load the LOD info */
+      if (ir->op == ir_txl) {
+	 int mrf, writemask;
+	 if (intel->gen >= 5) {
+	    mrf = param_base + 1;
+	    if (ir->shadow_comparitor) {
+	       writemask = WRITEMASK_Y;
+	       /* mlen already incremented */
+	    } else {
+	       writemask = WRITEMASK_X;
+	       inst->mlen++;
+	    }
+	 } else /* intel->gen == 4 */ {
+	    mrf = param_base;
+	    writemask = WRITEMASK_Z;
+	 }
+	 ir->lod_info.lod->accept(this);
+	 emit(MOV(dst_reg(MRF, mrf, ir->lod_info.lod->type, writemask),
+		  this->result));
+      } else if (ir->op == ir_txf) {
+	 ir->lod_info.lod->accept(this);
+	 emit(MOV(dst_reg(MRF, param_base, ir->lod_info.lod->type, WRITEMASK_W),
+		  this->result));
+      } else if (ir->op == ir_txd) {
+	 const glsl_type *type = ir->lod_info.grad.dPdx->type;
+
+	 ir->lod_info.grad.dPdx->accept(this);
+	 src_reg dPdx = this->result;
+	 ir->lod_info.grad.dPdy->accept(this);
+	 src_reg dPdy = this->result;
+
+	 if (intel->gen >= 5) {
+	    dPdx.swizzle = BRW_SWIZZLE4(SWIZZLE_X,SWIZZLE_X,SWIZZLE_Y,SWIZZLE_Y);
+	    dPdy.swizzle = BRW_SWIZZLE4(SWIZZLE_X,SWIZZLE_X,SWIZZLE_Y,SWIZZLE_Y);
+	    emit(MOV(dst_reg(MRF, param_base + 1, type, WRITEMASK_XZ), dPdx));
+	    emit(MOV(dst_reg(MRF, param_base + 1, type, WRITEMASK_YW), dPdy));
+	    inst->mlen++;
+
+	    if (ir->type->vector_elements == 3) {
+	       dPdx.swizzle = BRW_SWIZZLE_ZZZZ;
+	       dPdy.swizzle = BRW_SWIZZLE_ZZZZ;
+	       emit(MOV(dst_reg(MRF, param_base + 2, type, WRITEMASK_X), dPdx));
+	       emit(MOV(dst_reg(MRF, param_base + 2, type, WRITEMASK_Y), dPdy));
+	       inst->mlen++;
+	    }
+	 } else /* intel->gen == 4 */ {
+	    emit(MOV(dst_reg(MRF, param_base + 1, type, WRITEMASK_XYZ), dPdx));
+	    emit(MOV(dst_reg(MRF, param_base + 2, type, WRITEMASK_XYZ), dPdy));
+	    inst->mlen += 2;
+	 }
+      }
+   }
+
+   emit(inst);
+
+   swizzle_result(ir, src_reg(inst->dst), sampler);
+}
+
+void
+vec4_visitor::swizzle_result(ir_texture *ir, src_reg orig_val, int sampler)
+{
+   this->result = orig_val;
+
+   int s = c->key.tex.swizzles[sampler];
+
+   if (ir->op == ir_txs || ir->type == glsl_type::float_type
+			|| s == SWIZZLE_NOOP)
+      return;
+
+   int zero_mask = 0, one_mask = 0, copy_mask = 0;
+   int swizzle[4];
+
+   for (int i = 0; i < 4; i++) {
+      switch (GET_SWZ(s, i)) {
+      case SWIZZLE_ZERO:
+	 zero_mask |= (1 << i);
+	 break;
+      case SWIZZLE_ONE:
+	 one_mask |= (1 << i);
+	 break;
+      default:
+	 copy_mask |= (1 << i);
+	 swizzle[i] = GET_SWZ(s, i);
+	 break;
+      }
+   }
+
+   this->result = src_reg(this, ir->type);
+   dst_reg swizzled_result(this->result);
+
+   if (copy_mask) {
+      orig_val.swizzle = BRW_SWIZZLE4(swizzle[0], swizzle[1], swizzle[2], swizzle[3]);
+      swizzled_result.writemask = copy_mask;
+      emit(MOV(swizzled_result, orig_val));
+   }
+
+   if (zero_mask) {
+      swizzled_result.writemask = zero_mask;
+      emit(MOV(swizzled_result, src_reg(0.0f)));
+   }
+
+   if (one_mask) {
+      swizzled_result.writemask = one_mask;
+      emit(MOV(swizzled_result, src_reg(1.0f)));
+   }
 }
 
 void
@@ -2074,11 +2292,6 @@ vec4_visitor::emit_urb_writes()
        */
       inst->offset = (max_usable_mrf - base_mrf) / 2;
    }
-
-   if (intel->gen == 6)
-      c->prog_data.urb_entry_size = ALIGN(c->vue_map.num_slots, 8) / 8;
-   else
-      c->prog_data.urb_entry_size = ALIGN(c->vue_map.num_slots, 4) / 4;
 }
 
 src_reg
@@ -2388,11 +2601,9 @@ vec4_visitor::vec4_visitor(struct brw_vs_compile *c,
    this->virtual_grf_array_size = 0;
    this->live_intervals_valid = false;
 
-   this->uniforms = 0;
+   this->max_grf = intel->gen >= 7 ? GEN7_MRF_HACK_START : BRW_MAX_GRF;
 
-   this->variable_ht = hash_table_ctor(0,
-				       hash_table_pointer_hash,
-				       hash_table_pointer_compare);
+   this->uniforms = 0;
 }
 
 vec4_visitor::~vec4_visitor()

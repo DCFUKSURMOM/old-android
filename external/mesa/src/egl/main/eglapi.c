@@ -217,9 +217,6 @@ _eglCheckConfig(_EGLDisplay *disp, _EGLConfig *conf, const char *msg)
 }
 
 
-#ifdef EGL_KHR_reusable_sync
-
-
 static INLINE _EGLDriver *
 _eglCheckSync(_EGLDisplay *disp, _EGLSync *s, const char *msg)
 {
@@ -232,9 +229,6 @@ _eglCheckSync(_EGLDisplay *disp, _EGLSync *s, const char *msg)
    }
    return drv;
 }
-
-
-#endif /* EGL_KHR_reusable_sync */
 
 
 #ifdef EGL_MESA_screen_surface
@@ -759,7 +753,6 @@ eglWaitClient(void)
 EGLBoolean EGLAPIENTRY
 eglWaitGL(void)
 {
-#ifdef EGL_VERSION_1_2
    _EGLThreadInfo *t = _eglGetCurrentThread();
    EGLint api_index = t->CurrentAPIIndex;
    EGLint es_index = _eglConvertApiToIndex(EGL_OPENGL_ES_API);
@@ -772,9 +765,6 @@ eglWaitGL(void)
    ret = eglWaitClient();
    t->CurrentAPIIndex = api_index;
    return ret;
-#else
-   return eglWaitClient();
-#endif
 }
 
 
@@ -933,10 +923,13 @@ eglGetProcAddress(const char *procname)
 #ifdef EGL_MESA_drm_display
       { "eglGetDRMDisplayMESA", (_EGLProc) eglGetDRMDisplayMESA },
 #endif
-#ifdef EGL_KHR_image_base
       { "eglCreateImageKHR", (_EGLProc) eglCreateImageKHR },
       { "eglDestroyImageKHR", (_EGLProc) eglDestroyImageKHR },
-#endif /* EGL_KHR_image_base */
+      { "eglCreateSyncKHR", (_EGLProc) eglCreateSyncKHR },
+      { "eglDestroySyncKHR", (_EGLProc) eglDestroySyncKHR },
+      { "eglClientWaitSyncKHR", (_EGLProc) eglClientWaitSyncKHR },
+      { "eglSignalSyncKHR", (_EGLProc) eglSignalSyncKHR },
+      { "eglGetSyncAttribKHR", (_EGLProc) eglGetSyncAttribKHR },
 #ifdef EGL_NOK_swap_region
       { "eglSwapBuffersRegionNOK", (_EGLProc) eglSwapBuffersRegionNOK },
 #endif
@@ -948,9 +941,7 @@ eglGetProcAddress(const char *procname)
       { "eglBindWaylandDisplayWL", (_EGLProc) eglBindWaylandDisplayWL },
       { "eglUnbindWaylandDisplayWL", (_EGLProc) eglUnbindWaylandDisplayWL },
 #endif
-#ifdef EGL_ANDROID_swap_rectangle
-      { "eglSetSwapRectangleANDROID", (_EGLProc) eglSetSwapRectangleANDROID },
-#endif
+      { "eglPostSubBufferNV", (_EGLProc) eglPostSubBufferNV },
       { NULL, NULL }
    };
    EGLint i;
@@ -1211,9 +1202,6 @@ eglGetDRMDisplayMESA(int fd)
  ** EGL 1.2
  **/
 
-#ifdef EGL_VERSION_1_2
-
-
 /**
  * Specify the client API to use for subsequent calls including:
  *  eglCreateContext()
@@ -1312,12 +1300,6 @@ eglReleaseThread(void)
 }
 
 
-#endif /* EGL_VERSION_1_2 */
-
-
-#ifdef EGL_KHR_image_base
-
-
 EGLImageKHR EGLAPIENTRY
 eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
                   EGLClientBuffer buffer, const EGLint *attr_list)
@@ -1361,12 +1343,6 @@ eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image)
 
    RETURN_EGL_EVAL(disp, ret);
 }
-
-
-#endif /* EGL_KHR_image_base */
-
-
-#ifdef EGL_KHR_reusable_sync
 
 
 EGLSyncKHR EGLAPIENTRY
@@ -1452,9 +1428,6 @@ eglGetSyncAttribKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint attribute, EGLint *v
 
    RETURN_EGL_EVAL(disp, ret);
 }
-
-
-#endif /* EGL_KHR_reusable_sync */
 
 
 #ifdef EGL_NOK_swap_region
@@ -1569,24 +1542,22 @@ eglUnbindWaylandDisplayWL(EGLDisplay dpy, struct wl_display *display)
 }
 #endif
 
-#ifdef EGL_ANDROID_swap_rectangle
+
 EGLBoolean EGLAPIENTRY
-eglSetSwapRectangleANDROID(EGLDisplay dpy, EGLSurface draw,
-                           EGLint left, EGLint top,
-                           EGLint width, EGLint height)
+eglPostSubBufferNV(EGLDisplay dpy, EGLSurface surface,
+                   EGLint x, EGLint y, EGLint width, EGLint height)
 {
    _EGLDisplay *disp = _eglLockDisplay(dpy);
-   _EGLSurface *surf = _eglLookupSurface(draw, disp);
+   _EGLSurface *surf = _eglLookupSurface(surface, disp);
    _EGLDriver *drv;
    EGLBoolean ret;
 
    _EGL_CHECK_SURFACE(disp, surf, EGL_FALSE, drv);
 
-   if (!disp->Extensions.ANDROID_swap_rectangle)
+   if (!disp->Extensions.NV_post_sub_buffer)
       RETURN_EGL_EVAL(disp, EGL_FALSE);
 
-   ret = drv->API.SetSwapRectangleANDROID(drv, disp, surf, left, top, width, height);
+   ret = drv->API.PostSubBufferNV(drv, disp, surf, x, y, width, height);
 
    RETURN_EGL_EVAL(disp, ret);
 }
-#endif

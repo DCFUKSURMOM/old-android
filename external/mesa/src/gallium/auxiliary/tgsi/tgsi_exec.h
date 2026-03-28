@@ -239,7 +239,7 @@ struct tgsi_exec_machine
 
    /* System values */
    unsigned                      SysSemanticToIndex[TGSI_SEMANTIC_COUNT];
-   float                         SystemValue[TGSI_MAX_MISC_INPUTS][4];
+   union tgsi_exec_channel       SystemValue[TGSI_MAX_MISC_INPUTS];
 
    struct tgsi_exec_vector       *Addrs;
    struct tgsi_exec_vector       *Predicates;
@@ -263,7 +263,7 @@ struct tgsi_exec_machine
    const struct tgsi_interp_coef *InterpCoefs;
    struct tgsi_exec_vector       QuadPos;
    float                         Face;    /**< +1 if front facing, -1 if back facing */
-
+   bool                          flatshade_color;
    /* Conditional execution masks */
    uint CondMask;  /**< For IF/ELSE/ENDIF */
    uint LoopMask;  /**< For BGNLOOP/ENDLOOP */

@@ -37,12 +37,12 @@
 #include "glapi.h"
 #include "glxextensions.h"
 #include "indirect.h"
+#include "glx_error.h"
 
 #ifdef GLX_DIRECT_RENDERING
 #ifdef GLX_USE_APPLEGL
 #include "apple_glx_context.h"
 #include "apple_glx.h"
-#include "glx_error.h"
 #else
 #include <sys/time.h>
 #ifdef XF86VIDMODE
@@ -150,7 +150,7 @@ DestroyGLXDrawable(Display *dpy, GLXDrawable drawable)
  *       number range for \c dpy?
  */
 
-static struct glx_screen *
+_X_HIDDEN struct glx_screen *
 GetGLXScreenConfigs(Display * dpy, int scrn)
 {
    struct glx_display *const priv = __glXInitialize(dpy);
@@ -344,6 +344,7 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
    UnlockDisplay(dpy);
    SyncHandle();
 
+   gc->share_xid = shareList ? shareList->xid : None;
    gc->imported = GL_FALSE;
    gc->renderType = renderType;
 
@@ -381,7 +382,7 @@ glXCreateContext(Display * dpy, XVisualInfo * vis,
                         X_GLXCreateContext, renderType, vis->screen);
 }
 
-_X_HIDDEN void
+static void
 glx_send_destroy_context(Display *dpy, XID xid)
 {
    CARD8 opcode = __glXSetupForCommand(dpy);
@@ -405,25 +406,24 @@ glXDestroyContext(Display * dpy, GLXContext ctx)
 {
    struct glx_context *gc = (struct glx_context *) ctx;
 
-   if (!gc)
+   if (gc == NULL || gc->xid == None)
       return;
 
    __glXLock();
+   if (!gc->imported)
+      glx_send_destroy_context(dpy, gc->xid);
+
    if (gc->currentDpy) {
       /* This context is bound to some thread.  According to the man page,
        * we should not actually delete the context until it's unbound.
        * Note that we set gc->xid = None above.  In MakeContextCurrent()
        * we check for that and delete the context there.
        */
-      if (!gc->imported)
-	 glx_send_destroy_context(dpy, gc->xid);
       gc->xid = None;
-      __glXUnlock();
-      return;
+   } else {
+      gc->vtable->destroy(gc);
    }
    __glXUnlock();
-
-   gc->vtable->destroy(gc);
 }
 
 /*
@@ -589,12 +589,19 @@ __glXIsDirect(Display * dpy, GLXContextID contextID)
 
 #ifdef USE_XCB
    xcb_connection_t *c = XGetXCBConnection(dpy);
+   xcb_generic_error_t *err;
    xcb_glx_is_direct_reply_t *reply = xcb_glx_is_direct_reply(c,
                                                               xcb_glx_is_direct
                                                               (c, contextID),
-                                                              NULL);
+                                                              &err);
 
-   const Bool is_direct = reply->is_direct ? True : False;
+   const Bool is_direct = (reply != NULL && reply->is_direct) ? True : False;
+
+   if (err != NULL) {
+      __glXSendErrorForXcb(dpy, err);
+      free(err);
+   }
+
    free(reply);
 
    return is_direct;
@@ -1411,16 +1418,41 @@ _X_EXPORT GLXContext
 glXImportContextEXT(Display *dpy, GLXContextID contextID)
 {
    struct glx_display *priv = __glXInitialize(dpy);
-   struct glx_screen *psc;
+   struct glx_screen *psc = NULL;
    xGLXQueryContextReply reply;
    CARD8 opcode;
    struct glx_context *ctx;
-   int propList[__GLX_MAX_CONTEXT_PROPS * 2], *pProp, nPropListBytes;
+
+   /* This GLX implementation knows about 5 different properties, so
+    * allow the server to send us one of each.
+    */
+   int propList[5 * 2], *pProp, nPropListBytes;
+   int numProps;
    int i, renderType;
    XID share;
    struct glx_config *mode;
+   uint32_t fbconfigID = 0;
+   uint32_t visualID = 0;
+   uint32_t screen;
+   Bool got_screen = False;
 
-   if (contextID == None || __glXIsDirect(dpy, contextID))
+   /* The GLX_EXT_import_context spec says:
+    *
+    *     "If <contextID> does not refer to a valid context, then a BadContext
+    *     error is generated; if <contextID> refers to direct rendering
+    *     context then no error is generated but glXImportContextEXT returns
+    *     NULL."
+    *
+    * If contextID is None, generate BadContext on the client-side.  Other
+    * sorts of invalid contexts will be detected by the server in the
+    * __glXIsDirect call.
+    */
+   if (contextID == None) {
+      __glXSendError(dpy, GLXBadContext, contextID, X_GLXIsDirect, false);
+      return NULL;
+   }
+
+   if (__glXIsDirect(dpy, contextID))
       return NULL;
 
    opcode = __glXSetupForCommand(dpy);
@@ -1463,34 +1495,44 @@ glXImportContextEXT(Display *dpy, GLXContextID contextID)
    UnlockDisplay(dpy);
    SyncHandle();
 
-   /* Look up screen first so we can look up visuals/fbconfigs later */
-   psc = NULL;
-   for (i = 0, pProp = propList; i < reply.n; i++, pProp += 2)
-      if (pProp[0] == GLX_SCREEN)
-	 psc = GetGLXScreenConfigs(dpy, pProp[1]);
-   if (psc == NULL)
-      return NULL;
-
+   numProps = nPropListBytes / (2 * sizeof(propList[0]));
    share = None;
    mode = NULL;
    renderType = 0;
    pProp = propList;
 
-   for (i = 0, pProp = propList; i < reply.n; i++, pProp += 2)
+   for (i = 0, pProp = propList; i < numProps; i++, pProp += 2)
       switch (pProp[0]) {
+      case GLX_SCREEN:
+	 screen = pProp[1];
+	 got_screen = True;
+	 break;
       case GLX_SHARE_CONTEXT_EXT:
 	 share = pProp[1];
 	 break;
       case GLX_VISUAL_ID_EXT:
-	 mode = glx_config_find_visual(psc->visuals, pProp[1]);
+	 visualID = pProp[1];
 	 break;
       case GLX_FBCONFIG_ID:
-	 mode = glx_config_find_fbconfig(psc->configs, pProp[1]);
+	 fbconfigID = pProp[1];
 	 break;
       case GLX_RENDER_TYPE:
 	 renderType = pProp[1];
 	 break;
       }
+
+   if (!got_screen)
+      return NULL;
+
+   psc = GetGLXScreenConfigs(dpy, screen);
+   if (psc == NULL)
+      return NULL;
+
+   if (fbconfigID != 0) {
+      mode = glx_config_find_fbconfig(psc->configs, fbconfigID);
+   } else if (visualID != 0) {
+      mode = glx_config_find_visual(psc->visuals, visualID);
+   }
 
    if (mode == NULL)
       return NULL;
@@ -1544,12 +1586,33 @@ _X_EXPORT GLXContextID glXGetContextIDEXT(const GLXContext ctx_user)
 {
    struct glx_context *ctx = (struct glx_context *) ctx_user;
 
-   return ctx->xid;
+   return (ctx == NULL) ? None : ctx->xid;
 }
 
-_X_EXPORT
-GLX_ALIAS_VOID(glXFreeContextEXT, (Display *dpy, GLXContext ctx), (dpy, ctx),
-	       glXDestroyContext);
+_X_EXPORT void
+glXFreeContextEXT(Display *dpy, GLXContext ctx)
+{
+   struct glx_context *gc = (struct glx_context *) ctx;
+
+   if (gc == NULL || gc->xid == None)
+      return;
+
+   /* The GLX_EXT_import_context spec says:
+    *
+    *     "glXFreeContext does not free the server-side context information or
+    *     the XID associated with the server-side context."
+    *
+    * Don't send any protocol.  Just destroy the client-side tracking of the
+    * context.  Also, only release the context structure if it's not current.
+    */
+   __glXLock();
+   if (gc->currentDpy) {
+      gc->xid = None;
+   } else {
+      gc->vtable->destroy(gc);
+   }
+   __glXUnlock();
+}
 
 _X_EXPORT GLXFBConfig *
 glXChooseFBConfig(Display * dpy, int screen,
@@ -2539,6 +2602,9 @@ static const struct name_address_pair GLX_functions[] = {
    GLX_FUNCTION(glXGetScreenDriver),
    GLX_FUNCTION(glXGetDriverConfig),
 #endif
+
+   /*** GLX_ARB_create_context and GLX_ARB_create_context_profile ***/
+   GLX_FUNCTION(glXCreateContextAttribsARB),
 
    {NULL, NULL}                 /* end of list */
 };

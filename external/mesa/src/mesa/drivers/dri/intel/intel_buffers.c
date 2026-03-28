@@ -28,6 +28,7 @@
 #include "intel_context.h"
 #include "intel_buffers.h"
 #include "intel_fbo.h"
+#include "intel_mipmap_tree.h"
 
 #include "main/framebuffer.h"
 #include "main/renderbuffer.h"
@@ -40,8 +41,8 @@ intel_drawbuf_region(struct intel_context *intel)
 {
    struct intel_renderbuffer *irbColor =
       intel_renderbuffer(intel->ctx.DrawBuffer->_ColorDrawBuffers[0]);
-   if (irbColor)
-      return irbColor->region;
+   if (irbColor && irbColor->mt)
+      return irbColor->mt->region;
    else
       return NULL;
 }
@@ -54,8 +55,8 @@ intel_readbuf_region(struct intel_context *intel)
 {
    struct intel_renderbuffer *irb
       = intel_renderbuffer(intel->ctx.ReadBuffer->_ColorReadBuffer);
-   if (irb)
-      return irb->region;
+   if (irb && irb->mt)
+      return irb->mt->region;
    else
       return NULL;
 }
@@ -87,7 +88,7 @@ intelDrawBuffer(struct gl_context * ctx, GLenum mode)
 	intel->is_front_buffer_rendering;
 
       intel->is_front_buffer_rendering = (mode == GL_FRONT_LEFT)
-	|| (mode == GL_FRONT);
+	|| (mode == GL_FRONT) || (mode == GL_FRONT_AND_BACK);
 
       /* If we weren't front-buffer rendering before but we are now,
        * invalidate our DRI drawable so we'll ask for new buffers

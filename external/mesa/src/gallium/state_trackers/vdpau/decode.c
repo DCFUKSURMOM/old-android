@@ -48,7 +48,6 @@ vlVdpDecoderCreate(VdpDevice device,
    vlVdpDevice *dev;
    vlVdpDecoder *vldecoder;
    VdpStatus ret;
-   unsigned i;
    bool supported;
 
    VDPAU_MSG(VDPAU_TRACE, "[VDPAU] Creating decoder\n");
@@ -90,31 +89,13 @@ vlVdpDecoderCreate(VdpDevice device,
       pipe, p_profile,
       PIPE_VIDEO_ENTRYPOINT_BITSTREAM,
       PIPE_VIDEO_CHROMA_FORMAT_420,
-      width, height, max_references
+      width, height, max_references,
+      false
    );
 
    if (!vldecoder->decoder) {
       ret = VDP_STATUS_ERROR;
       goto error_decoder;
-   }
-
-   vldecoder->num_buffers = pipe->screen->get_video_param
-   (
-      pipe->screen, p_profile,
-      PIPE_VIDEO_CAP_NUM_BUFFERS_DESIRED
-   );
-   vldecoder->cur_buffer = 0;
-
-   vldecoder->buffers = CALLOC(vldecoder->num_buffers, sizeof(void*));
-   if (!vldecoder->buffers)
-         goto error_alloc_buffers;
-
-   for (i = 0; i < vldecoder->num_buffers; ++i) {
-      vldecoder->buffers[i] = vldecoder->decoder->create_buffer(vldecoder->decoder);
-      if (!vldecoder->buffers[i]) {
-         ret = VDP_STATUS_ERROR;
-         goto error_create_buffers;
-      }
    }
 
    *decoder = vlAddDataHTAB(vldecoder);
@@ -128,15 +109,6 @@ vlVdpDecoderCreate(VdpDevice device,
    return VDP_STATUS_OK;
 
 error_handle:
-error_create_buffers:
-
-   for (i = 0; i < vldecoder->num_buffers; ++i)
-      if (vldecoder->buffers[i])
-         vldecoder->decoder->destroy_buffer(vldecoder->decoder, vldecoder->buffers[i]);
-
-   FREE(vldecoder->buffers);
-
-error_alloc_buffers:
 
    vldecoder->decoder->destroy(vldecoder->decoder);
 
@@ -152,19 +124,12 @@ VdpStatus
 vlVdpDecoderDestroy(VdpDecoder decoder)
 {
    vlVdpDecoder *vldecoder;
-   unsigned i;
 
    VDPAU_MSG(VDPAU_TRACE, "[VDPAU] Destroying decoder\n");
 
    vldecoder = (vlVdpDecoder *)vlGetDataHTAB(decoder);
    if (!vldecoder)
       return VDP_STATUS_INVALID_HANDLE;
-
-   for (i = 0; i < vldecoder->num_buffers; ++i)
-      if (vldecoder->buffers[i])
-         vldecoder->decoder->destroy_buffer(vldecoder->decoder, vldecoder->buffers[i]);
-
-   FREE(vldecoder->buffers);
 
    vldecoder->decoder->destroy(vldecoder->decoder);
 
@@ -245,6 +210,9 @@ vlVdpDecoderRenderMpeg12(struct pipe_video_decoder *decoder,
    picture.f_code[1][0] = picture_info->f_code[1][0] - 1;
    picture.f_code[1][1] = picture_info->f_code[1][1] - 1;
    picture.num_slices = picture_info->slice_count;
+   picture.top_field_first = picture_info->top_field_first;
+   picture.full_pel_forward_vector = picture_info->full_pel_forward_vector;
+   picture.full_pel_backward_vector = picture_info->full_pel_backward_vector;
 
    decoder->set_picture_parameters(decoder, &picture.base);
 
@@ -319,7 +287,6 @@ vlVdpDecoderRenderVC1(struct pipe_video_decoder *decoder,
 {
    struct pipe_vc1_picture_desc picture;
    struct pipe_video_buffer *ref_frames[2] = {};
-   unsigned i;
 
    VDPAU_MSG(VDPAU_TRACE, "[VDPAU] Decoding VC-1\n");
 
@@ -382,6 +349,8 @@ vlVdpDecoderRender(VdpDecoder decoder,
                    uint32_t bitstream_buffer_count,
                    VdpBitstreamBuffer const *bitstream_buffers)
 {
+   const void * buffers[bitstream_buffer_count];
+   unsigned sizes[bitstream_buffer_count];
    vlVdpDecoder *vldecoder;
    vlVdpSurface *vlsurf;
    VdpStatus ret;
@@ -409,10 +378,6 @@ vlVdpDecoderRender(VdpDecoder decoder,
       // TODO: Recreate decoder with correct chroma
       return VDP_STATUS_INVALID_CHROMA_TYPE;
 
-   ++vldecoder->cur_buffer;
-   vldecoder->cur_buffer %= vldecoder->num_buffers;
-
-   dec->set_decode_buffer(dec, vldecoder->buffers[vldecoder->cur_buffer]);
    dec->set_decode_target(dec, vlsurf->video_buffer);
 
    switch (u_reduce_video_profile(dec->profile)) {
@@ -432,9 +397,11 @@ vlVdpDecoderRender(VdpDecoder decoder,
       return ret;
 
    dec->begin_frame(dec);
-   for (i = 0; i < bitstream_buffer_count; ++i)
-      dec->decode_bitstream(dec, bitstream_buffers[i].bitstream_bytes,
-                                           bitstream_buffers[i].bitstream);
+   for (i = 0; i < bitstream_buffer_count; ++i) {
+      buffers[i] = bitstream_buffers[i].bitstream;
+      sizes[i] = bitstream_buffers[i].bitstream_bytes;
+   }
+   dec->decode_bitstream(dec, bitstream_buffer_count, buffers, sizes);
    dec->end_frame(dec);
    return ret;
 }

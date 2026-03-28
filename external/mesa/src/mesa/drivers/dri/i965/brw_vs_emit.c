@@ -311,7 +311,7 @@ static void brw_vs_alloc_regs( struct brw_vs_compile *c )
     */
    c->nr_inputs = 0;
    for (i = 0; i < VERT_ATTRIB_MAX; i++) {
-      if (c->prog_data.inputs_read & (1 << i)) {
+      if (c->prog_data.inputs_read & BITFIELD64_BIT(i)) {
 	 c->nr_inputs++;
 	 c->regs[PROGRAM_INPUT][i] = brw_vec8_grf(reg, 0);
 	 reg++;
@@ -1820,7 +1820,7 @@ brw_vs_rescale_gl_fixed(struct brw_vs_compile *c)
    int i;
 
    for (i = 0; i < VERT_ATTRIB_MAX; i++) {
-      if (!(c->prog_data.inputs_read & (1 << i)))
+      if (!(c->prog_data.inputs_read & BITFIELD64_BIT(i)))
 	 continue;
 
       if (c->key.gl_fixed_input_size[i] != 0) {
@@ -1843,9 +1843,7 @@ void brw_old_vs_emit(struct brw_vs_compile *c )
    struct brw_context *brw = p->brw;
    struct intel_context *intel = &brw->intel;
    const GLuint nr_insns = c->vp->program.Base.NumInstructions;
-   GLuint insn, loop_depth = 0;
-   struct brw_instruction *loop_inst[MAX_LOOP_DEPTH] = { 0 };
-   int if_depth_in_loop[MAX_LOOP_DEPTH];
+   GLuint insn;
    const struct brw_indirect stack_index = brw_indirect(0, 0);   
    GLuint index;
    GLuint file;
@@ -1859,7 +1857,6 @@ void brw_old_vs_emit(struct brw_vs_compile *c )
 
    brw_set_compression_control(p, BRW_COMPRESSION_NONE);
    brw_set_access_mode(p, BRW_ALIGN_16);
-   if_depth_in_loop[loop_depth] = 0;
 
    brw_set_acc_write_control(p, 1);
 
@@ -2081,7 +2078,6 @@ void brw_old_vs_emit(struct brw_vs_compile *c )
 	 struct brw_instruction *if_inst = brw_IF(p, BRW_EXECUTE_8);
 	 /* Note that brw_IF smashes the predicate_control field. */
 	 if_inst->header.predicate_control = get_predicate(inst);
-	 if_depth_in_loop[loop_depth]++;
 	 break;
       }
       case OPCODE_ELSE:
@@ -2091,54 +2087,29 @@ void brw_old_vs_emit(struct brw_vs_compile *c )
       case OPCODE_ENDIF:
 	 clear_current_const(c);
 	 brw_ENDIF(p);
-	 if_depth_in_loop[loop_depth]--;
 	 break;			
       case OPCODE_BGNLOOP:
 	 clear_current_const(c);
-         loop_inst[loop_depth++] = brw_DO(p, BRW_EXECUTE_8);
-	 if_depth_in_loop[loop_depth] = 0;
+	 brw_DO(p, BRW_EXECUTE_8);
          break;
       case OPCODE_BRK:
 	 brw_set_predicate_control(p, get_predicate(inst));
-	 brw_BREAK(p, if_depth_in_loop[loop_depth]);
+	 brw_BREAK(p);
 	 brw_set_predicate_control(p, BRW_PREDICATE_NONE);
          break;
       case OPCODE_CONT:
 	 brw_set_predicate_control(p, get_predicate(inst));
 	 if (intel->gen >= 6) {
-	    gen6_CONT(p, loop_inst[loop_depth - 1]);
+	    gen6_CONT(p);
 	 } else {
-	    brw_CONT(p, if_depth_in_loop[loop_depth]);
+	    brw_CONT(p);
 	 }
          brw_set_predicate_control(p, BRW_PREDICATE_NONE);
          break;
 
-      case OPCODE_ENDLOOP: {
+      case OPCODE_ENDLOOP:
 	 clear_current_const(c);
-	 struct brw_instruction *inst0, *inst1;
-	 GLuint br = 1;
-
-	 loop_depth--;
-
-	 if (intel->gen == 5)
-	    br = 2;
-
-	 inst0 = inst1 = brw_WHILE(p, loop_inst[loop_depth]);
-
-	 if (intel->gen < 6) {
-	    /* patch all the BREAK/CONT instructions from last BEGINLOOP */
-	    while (inst0 > loop_inst[loop_depth]) {
-	       inst0--;
-	       if (inst0->header.opcode == BRW_OPCODE_BREAK &&
-		   inst0->bits3.if_else.jump_count == 0) {
-		  inst0->bits3.if_else.jump_count = br * (inst1 - inst0 + 1);
-	       } else if (inst0->header.opcode == BRW_OPCODE_CONTINUE &&
-			  inst0->bits3.if_else.jump_count == 0) {
-		  inst0->bits3.if_else.jump_count = br * (inst1 - inst0);
-	       }
-	    }
-	 }
-      }
+	 brw_WHILE(p);
          break;
 
       case OPCODE_BRA:

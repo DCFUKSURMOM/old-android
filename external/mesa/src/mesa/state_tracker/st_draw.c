@@ -45,13 +45,13 @@
 #include "main/bufferobj.h"
 #include "main/macros.h"
 #include "main/mfeatures.h"
-#include "program/prog_uniform.h"
 
 #include "vbo/vbo.h"
 
 #include "st_context.h"
 #include "st_atom.h"
 #include "st_cb_bufferobjects.h"
+#include "st_cb_xformfb.h"
 #include "st_draw.h"
 #include "st_program.h"
 
@@ -63,6 +63,8 @@
 #include "util/u_draw_quad.h"
 #include "draw/draw_context.h"
 #include "cso_cache/cso_context.h"
+
+#include "../glsl/ir_uniform.h"
 
 
 static GLuint double_types[4] = {
@@ -100,6 +102,13 @@ static GLuint uint_types_scale[4] = {
    PIPE_FORMAT_R32G32B32A32_USCALED
 };
 
+static GLuint uint_types_int[4] = {
+   PIPE_FORMAT_R32_UINT,
+   PIPE_FORMAT_R32G32_UINT,
+   PIPE_FORMAT_R32G32B32_UINT,
+   PIPE_FORMAT_R32G32B32A32_UINT
+};
+
 static GLuint int_types_norm[4] = {
    PIPE_FORMAT_R32_SNORM,
    PIPE_FORMAT_R32G32_SNORM,
@@ -112,6 +121,13 @@ static GLuint int_types_scale[4] = {
    PIPE_FORMAT_R32G32_SSCALED,
    PIPE_FORMAT_R32G32B32_SSCALED,
    PIPE_FORMAT_R32G32B32A32_SSCALED
+};
+
+static GLuint int_types_int[4] = {
+   PIPE_FORMAT_R32_SINT,
+   PIPE_FORMAT_R32G32_SINT,
+   PIPE_FORMAT_R32G32B32_SINT,
+   PIPE_FORMAT_R32G32B32A32_SINT
 };
 
 static GLuint ushort_types_norm[4] = {
@@ -128,6 +144,13 @@ static GLuint ushort_types_scale[4] = {
    PIPE_FORMAT_R16G16B16A16_USCALED
 };
 
+static GLuint ushort_types_int[4] = {
+   PIPE_FORMAT_R16_UINT,
+   PIPE_FORMAT_R16G16_UINT,
+   PIPE_FORMAT_R16G16B16_UINT,
+   PIPE_FORMAT_R16G16B16A16_UINT
+};
+
 static GLuint short_types_norm[4] = {
    PIPE_FORMAT_R16_SNORM,
    PIPE_FORMAT_R16G16_SNORM,
@@ -140,6 +163,13 @@ static GLuint short_types_scale[4] = {
    PIPE_FORMAT_R16G16_SSCALED,
    PIPE_FORMAT_R16G16B16_SSCALED,
    PIPE_FORMAT_R16G16B16A16_SSCALED
+};
+
+static GLuint short_types_int[4] = {
+   PIPE_FORMAT_R16_SINT,
+   PIPE_FORMAT_R16G16_SINT,
+   PIPE_FORMAT_R16G16B16_SINT,
+   PIPE_FORMAT_R16G16B16A16_SINT
 };
 
 static GLuint ubyte_types_norm[4] = {
@@ -156,6 +186,13 @@ static GLuint ubyte_types_scale[4] = {
    PIPE_FORMAT_R8G8B8A8_USCALED
 };
 
+static GLuint ubyte_types_int[4] = {
+   PIPE_FORMAT_R8_UINT,
+   PIPE_FORMAT_R8G8_UINT,
+   PIPE_FORMAT_R8G8B8_UINT,
+   PIPE_FORMAT_R8G8B8A8_UINT
+};
+
 static GLuint byte_types_norm[4] = {
    PIPE_FORMAT_R8_SNORM,
    PIPE_FORMAT_R8G8_SNORM,
@@ -168,6 +205,13 @@ static GLuint byte_types_scale[4] = {
    PIPE_FORMAT_R8G8_SSCALED,
    PIPE_FORMAT_R8G8B8_SSCALED,
    PIPE_FORMAT_R8G8B8A8_SSCALED
+};
+
+static GLuint byte_types_int[4] = {
+   PIPE_FORMAT_R8_SINT,
+   PIPE_FORMAT_R8G8_SINT,
+   PIPE_FORMAT_R8G8B8_SINT,
+   PIPE_FORMAT_R8G8B8A8_SINT
 };
 
 static GLuint fixed_types[4] = {
@@ -184,7 +228,7 @@ static GLuint fixed_types[4] = {
  */
 enum pipe_format
 st_pipe_vertex_format(GLenum type, GLuint size, GLenum format,
-                      GLboolean normalized)
+                      GLboolean normalized, GLboolean integer)
 {
    assert((type >= GL_BYTE && type <= GL_DOUBLE) ||
           type == GL_FIXED || type == GL_HALF_FLOAT ||
@@ -197,6 +241,7 @@ st_pipe_vertex_format(GLenum type, GLuint size, GLenum format,
    if (type == GL_INT_2_10_10_10_REV ||
        type == GL_UNSIGNED_INT_2_10_10_10_REV) {
       assert(size == 4);
+      assert(!integer);
 
       if (format == GL_BGRA) {
          if (type == GL_INT_2_10_10_10_REV) {
@@ -232,7 +277,18 @@ st_pipe_vertex_format(GLenum type, GLuint size, GLenum format,
       return PIPE_FORMAT_B8G8R8A8_UNORM;
    }
 
-   if (normalized) {
+   if (integer) {
+      switch (type) {
+      case GL_INT: return int_types_int[size-1];
+      case GL_SHORT: return short_types_int[size-1];
+      case GL_BYTE: return byte_types_int[size-1];
+      case GL_UNSIGNED_INT: return uint_types_int[size-1];
+      case GL_UNSIGNED_SHORT: return ushort_types_int[size-1];
+      case GL_UNSIGNED_BYTE: return ubyte_types_int[size-1];
+      default: assert(0); return 0;
+      }
+   }
+   else if (normalized) {
       switch (type) {
       case GL_DOUBLE: return double_types[size-1];
       case GL_FLOAT: return float_types[size-1];
@@ -324,7 +380,7 @@ is_interleaved_arrays(const struct st_vertex_program *vp,
          if (abs(array->Ptr - firstPtr) > firstStride)
             return GL_FALSE; /* arrays start too far apart */
 
-         if ((!bufObj || !_mesa_is_bufferobj(bufObj)) != userSpaceBuffer)
+         if ((!_mesa_is_bufferobj(bufObj)) != userSpaceBuffer)
             return GL_FALSE; /* mix of VBO and user-space arrays */
       }
    }
@@ -338,8 +394,9 @@ is_interleaved_arrays(const struct st_vertex_program *vp,
  * or all live in user space.
  * \param vbuffer  returns vertex buffer info
  * \param velements  returns vertex element info
+ * \return GL_TRUE for success, GL_FALSE otherwise (probably out of memory)
  */
-static void
+static GLboolean
 setup_interleaved_attribs(struct gl_context *ctx,
                           const struct st_vertex_program *vp,
                           const struct st_vp_variant *vpv,
@@ -388,7 +445,7 @@ setup_interleaved_attribs(struct gl_context *ctx,
    }
 
    /* are the arrays in user space? */
-   usingVBO = bufobj && _mesa_is_bufferobj(bufobj);
+   usingVBO = _mesa_is_bufferobj(bufobj);
 
    for (attr = 0; attr < vpv->num_inputs; attr++) {
       const GLuint mesaAttr = vp->index_to_input[attr];
@@ -404,7 +461,8 @@ setup_interleaved_attribs(struct gl_context *ctx,
       velements[attr].src_format = st_pipe_vertex_format(array->Type,
                                                          array->Size,
                                                          array->Format,
-                                                         array->Normalized);
+                                                         array->Normalized,
+                                                         array->Integer);
       assert(velements[attr].src_format);
 
       if (!usingVBO) {
@@ -434,6 +492,11 @@ setup_interleaved_attribs(struct gl_context *ctx,
       /* all interleaved arrays in a VBO */
       struct st_buffer_object *stobj = st_buffer_object(bufobj);
 
+      if (!stobj || !stobj->buffer) {
+         /* probably out of memory (or zero-sized buffer) */
+         return GL_FALSE;
+      }
+
       vbuffer->buffer = NULL;
       pipe_resource_reference(&vbuffer->buffer, stobj->buffer);
       vbuffer->buffer_offset = pointer_to_offset(low_addr);
@@ -455,6 +518,8 @@ setup_interleaved_attribs(struct gl_context *ctx,
       st->user_attrib[0].stride = stride;
       st->num_user_attribs = 1;
    }
+
+   return GL_TRUE;
 }
 
 
@@ -463,8 +528,9 @@ setup_interleaved_attribs(struct gl_context *ctx,
  * vertex attribute.
  * \param vbuffer  returns vertex buffer info
  * \param velements  returns vertex element info
+ * \return GL_TRUE for success, GL_FALSE otherwise (probably out of memory)
  */
-static void
+static GLboolean
 setup_non_interleaved_attribs(struct gl_context *ctx,
                               const struct st_vertex_program *vp,
                               const struct st_vp_variant *vpv,
@@ -487,13 +553,17 @@ setup_non_interleaved_attribs(struct gl_context *ctx,
 
       assert(element_size == array->Size * _mesa_sizeof_type(array->Type));
 
-      if (bufobj && _mesa_is_bufferobj(bufobj)) {
+      if (_mesa_is_bufferobj(bufobj)) {
          /* Attribute data is in a VBO.
           * Recall that for VBOs, the gl_client_array->Ptr field is
           * really an offset from the start of the VBO, not a pointer.
           */
          struct st_buffer_object *stobj = st_buffer_object(bufobj);
-         assert(stobj->buffer);
+
+         if (!stobj || !stobj->buffer) {
+            /* probably out of memory (or zero-sized buffer) */
+            return GL_FALSE;
+         }
 
          vbuffer[attr].buffer = NULL;
          pipe_resource_reference(&vbuffer[attr].buffer, stobj->buffer);
@@ -533,6 +603,11 @@ setup_non_interleaved_attribs(struct gl_context *ctx,
          st->user_attrib[attr].element_size = element_size;
          st->user_attrib[attr].stride = stride;
          st->num_user_attribs = MAX2(st->num_user_attribs, attr + 1);
+
+         if (!vbuffer[attr].buffer) {
+            /* probably ran out of memory */
+            return GL_FALSE;
+         }
       }
 
       /* common-case setup */
@@ -544,9 +619,12 @@ setup_non_interleaved_attribs(struct gl_context *ctx,
       velements[attr].src_format = st_pipe_vertex_format(array->Type,
                                                          array->Size,
                                                          array->Format,
-                                                         array->Normalized);
+                                                         array->Normalized,
+                                                         array->Integer);
       assert(velements[attr].src_format);
    }
+
+   return GL_TRUE;
 }
 
 
@@ -562,23 +640,10 @@ setup_index_buffer(struct gl_context *ctx,
    if (ib) {
       struct gl_buffer_object *bufobj = ib->obj;
 
-      switch (ib->type) {
-      case GL_UNSIGNED_INT:
-         ibuffer->index_size = 4;
-         break;
-      case GL_UNSIGNED_SHORT:
-         ibuffer->index_size = 2;
-         break;
-      case GL_UNSIGNED_BYTE:
-         ibuffer->index_size = 1;
-         break;
-      default:
-         assert(0);
-	 return;
-      }
+      ibuffer->index_size = vbo_sizeof_ib_type(ib->type);
 
       /* get/create the index buffer object */
-      if (bufobj && _mesa_is_bufferobj(bufobj)) {
+      if (_mesa_is_bufferobj(bufobj)) {
          /* elements/indexes are in a real VBO */
          struct st_buffer_object *stobj = st_buffer_object(bufobj);
          pipe_resource_reference(&ibuffer->buffer, stobj->buffer);
@@ -616,56 +681,119 @@ check_uniforms(struct gl_context *ctx)
       if (shProg[j] == NULL || !shProg[j]->LinkStatus)
 	 continue;
 
-      for (i = 0; i < shProg[j]->Uniforms->NumUniforms; i++) {
-         const struct gl_uniform *u = &shProg[j]->Uniforms->Uniforms[i];
-         if (!u->Initialized) {
+      for (i = 0; i < shProg[j]->NumUserUniformStorage; i++) {
+         const struct gl_uniform_storage *u = &shProg[j]->UniformStorage[i];
+         if (!u->initialized) {
             _mesa_warning(ctx,
                           "Using shader with uninitialized uniform: %s",
-                          u->Name);
+                          u->name);
          }
       }
    }
 }
 
-/** Helper code for primitive restart fallback */
-#define DO_DRAW(pipe, cur_start, cur_count) \
-   do { \
-      info.start = cur_start; \
-      info.count = cur_count; \
-      if (u_trim_pipe_prim(info.mode, &info.count)) { \
-         if (transfer) \
-            pipe_buffer_unmap(pipe, transfer); \
-         pipe->draw_vbo(pipe, &info); \
-         if (transfer) { \
-            ptr = pipe_buffer_map(pipe, ibuffer->buffer, PIPE_TRANSFER_READ, &transfer); \
-            assert(ptr != NULL); \
-            ptr = ADD_POINTERS(ptr, ibuffer->offset); \
-         } \
-      } \
-   } while(0)
-      
-/** More helper code for primitive restart fallback */
-#define PRIM_RESTART_LOOP(elements) \
-   do { \
-      for (i = start; i < end; i++) { \
-         if (elements[i] == info.restart_index) { \
-            if (cur_count > 0) { \
-               /* draw elts up to prev pos */ \
-               DO_DRAW(pipe, cur_start, cur_count); \
-            } \
-            /* begin new prim at next elt */ \
-            cur_start = i + 1; \
-            cur_count = 0; \
-         } \
-         else { \
-            cur_count++; \
-         } \
-      } \
-      if (cur_count > 0) { \
-         DO_DRAW(pipe, cur_start, cur_count); \
-      } \
-   } while (0)
 
+/*
+ * Notes on primitive restart:
+ * The code below is used when the gallium driver does not support primitive
+ * restart itself.  We map the index buffer, find the restart indexes, unmap
+ * the index buffer then draw the sub-primitives delineated by the restarts.
+ * A couple possible optimizations:
+ * 1. Save the list of sub-primitive (start, count) values in a list attached
+ *    to the index buffer for re-use in subsequent draws.  The list would be
+ *    invalidated when the contents of the buffer changed.
+ * 2. If drawing triangle strips or quad strips, create a new index buffer
+ *    that uses duplicated vertices to render the disjoint strips as one
+ *    long strip.  We'd have to be careful to avoid using too much memory
+ *    for this.
+ * Finally, some apps might perform better if they don't use primitive restart
+ * at all rather than this fallback path.  Set MESA_EXTENSION_OVERRIDE to
+ * "-GL_NV_primitive_restart" to test that.
+ */
+
+
+struct sub_primitive
+{
+   unsigned start, count;
+};
+
+
+/**
+ * Scan the elements array to find restart indexes.  Return a list
+ * of primitive (start,count) pairs to indicate how to draw the sub-
+ * primitives delineated by the restart index.
+ */
+static struct sub_primitive *
+find_sub_primitives(const void *elements, unsigned element_size,
+                    unsigned start, unsigned end, unsigned restart_index,
+                    unsigned *num_sub_prims)
+{
+   const unsigned max_prims = end - start;
+   struct sub_primitive *sub_prims;
+   unsigned i, cur_start, cur_count, num;
+
+   sub_prims = (struct sub_primitive *)
+      malloc(max_prims * sizeof(struct sub_primitive));
+
+   if (!sub_prims) {
+      *num_sub_prims = 0;
+      return NULL;
+   }
+
+   cur_start = start;
+   cur_count = 0;
+   num = 0;
+
+#define SCAN_ELEMENTS(TYPE) \
+   for (i = start; i < end; i++) { \
+      if (((const TYPE *) elements)[i] == restart_index) { \
+         if (cur_count > 0) { \
+            assert(num < max_prims); \
+            sub_prims[num].start = cur_start; \
+            sub_prims[num].count = cur_count; \
+            num++; \
+         } \
+         cur_start = i + 1; \
+         cur_count = 0; \
+      } \
+      else { \
+         cur_count++; \
+      } \
+   } \
+   if (cur_count > 0) { \
+      assert(num < max_prims); \
+      sub_prims[num].start = cur_start; \
+      sub_prims[num].count = cur_count; \
+      num++; \
+   }
+
+   switch (element_size) {
+   case 1:
+      SCAN_ELEMENTS(ubyte);
+      break;
+   case 2:
+      SCAN_ELEMENTS(ushort);
+      break;
+   case 4:
+      SCAN_ELEMENTS(uint);
+      break;
+   default:
+      assert(0 && "bad index_size in find_sub_primitives()");
+   }
+
+#undef SCAN_ELEMENTS
+
+   *num_sub_prims = num;
+
+   return sub_prims;
+}
+
+
+/**
+ * For gallium drivers that don't support the primitive restart
+ * feature, handle it here by breaking up the indexed primitive into
+ * sub-primitives.
+ */
 static void
 handle_fallback_primitive_restart(struct pipe_context *pipe,
                                   const struct _mesa_index_buffer *ib,
@@ -674,78 +802,62 @@ handle_fallback_primitive_restart(struct pipe_context *pipe,
 {
    const unsigned start = orig_info->start;
    const unsigned count = orig_info->count;
-   const unsigned end = start + count;
    struct pipe_draw_info info = *orig_info;
    struct pipe_transfer *transfer = NULL;
-   unsigned instance, i, cur_start, cur_count;
-   const void *ptr;
+   unsigned instance, i;
+   const void *ptr = NULL;
+   struct sub_primitive *sub_prims;
+   unsigned num_sub_prims;
+
+   assert(info.indexed);
+   assert(ibuffer->buffer);
+   assert(ib);
+
+   if (!ibuffer->buffer || !ib)
+      return;
 
    info.primitive_restart = FALSE;
+   info.instance_count = 1;
 
-   if (!info.indexed) {
-      /* Splitting the draw arrays call is handled by the VBO module */
-      if (u_trim_pipe_prim(info.mode, &info.count))
-         pipe->draw_vbo(pipe, &info);
+   if (_mesa_is_bufferobj(ib->obj)) {
+      ptr = pipe_buffer_map_range(pipe, ibuffer->buffer,
+                                  start * ibuffer->index_size, /* start */
+                                  count * ibuffer->index_size, /* length */
+                                  PIPE_TRANSFER_READ, &transfer);
+      if (!ptr)
+         return;
 
-      return;
+      ptr = (uint8_t*)ptr + (ibuffer->offset - start * ibuffer->index_size);
+   }
+   else {
+      ptr = ib->ptr;
+      if (!ptr)
+         return;
    }
 
-   /* info.indexed == TRUE */
-   assert(ibuffer);
-   assert(ibuffer->buffer);
-
-   if (ib) {
-      struct gl_buffer_object *bufobj = ib->obj;
-      if (bufobj && bufobj->Name) {
-         ptr = NULL;
-      }
-      else {
-         ptr = ib->ptr;
-      }
-   } else {
-      ptr = NULL;
-   }
-
-   if (!ptr)
-      ptr = pipe_buffer_map(pipe, ibuffer->buffer, PIPE_TRANSFER_READ, &transfer);
-
-   if (!ptr)
-     return;
-   ptr = ADD_POINTERS(ptr, ibuffer->offset);
-
-   /* Need to loop over instances as well to preserve draw order */
-   for (instance = 0; instance < orig_info->instance_count; instance++) {
-      info.start_instance = instance + orig_info->start_instance;
-      info.instance_count = 1;
-      cur_start = start;
-      cur_count = 0;
-
-      switch (ibuffer->index_size) {
-      case 1:
-         {
-            const ubyte *elt_ub = (const ubyte *)ptr; 
-            PRIM_RESTART_LOOP(elt_ub);
-         }
-         break;
-      case 2:
-         {
-            const ushort *elt_us = (const ushort *)ptr;
-            PRIM_RESTART_LOOP(elt_us);
-         }
-         break;
-      case 4:
-         {
-            const uint *elt_ui = (const uint *)ptr;
-            PRIM_RESTART_LOOP(elt_ui);
-         }
-         break;
-      default:
-         assert(0 && "bad index_size in handle_fallback_primitive_restart()");
-      }
-   }
+   sub_prims = find_sub_primitives(ptr, ibuffer->index_size,
+                                   0, count, orig_info->restart_index,
+                                   &num_sub_prims);
 
    if (transfer)
       pipe_buffer_unmap(pipe, transfer);
+
+   /* Now draw the sub primitives.
+    * Need to loop over instances as well to preserve draw order.
+    */
+   for (instance = 0; instance < orig_info->instance_count; instance++) {
+      info.start_instance = instance + orig_info->start_instance;
+      for (i = 0; i < num_sub_prims; i++) {
+         info.start = sub_prims[i].start;
+         info.count = sub_prims[i].count;
+         if (u_trim_pipe_prim(info.mode, &info.count)) {
+            pipe->draw_vbo(pipe, &info);
+         }
+      }
+   }
+
+   if (sub_prims)
+      free(sub_prims);
 }
 
 
@@ -775,7 +887,11 @@ translate_prim(const struct gl_context *ctx, unsigned prim)
 }
 
 
-static void
+/**
+ * Setup vertex arrays and buffers prior to drawing.
+ * \return GL_TRUE for success, GL_FALSE otherwise (probably out of memory)
+ */
+static GLboolean
 st_validate_varrays(struct gl_context *ctx,
                     const struct gl_client_array **arrays,
                     unsigned max_index,
@@ -806,8 +922,10 @@ st_validate_varrays(struct gl_context *ctx,
     * Setup the vbuffer[] and velements[] arrays.
     */
    if (is_interleaved_arrays(vp, vpv, arrays)) {
-      setup_interleaved_attribs(ctx, vp, vpv, arrays, vbuffer, velements,
-                                max_index, num_instances);
+      if (!setup_interleaved_attribs(ctx, vp, vpv, arrays, vbuffer, velements,
+                                     max_index, num_instances)) {
+         return GL_FALSE;
+      }
 
       num_vbuffers = 1;
       num_velements = vpv->num_inputs;
@@ -815,9 +933,12 @@ st_validate_varrays(struct gl_context *ctx,
          num_vbuffers = 0;
    }
    else {
-      setup_non_interleaved_attribs(ctx, vp, vpv, arrays,
-                                    vbuffer, velements, max_index,
-                                    num_instances);
+      if (!setup_non_interleaved_attribs(ctx, vp, vpv, arrays,
+                                         vbuffer, velements, max_index,
+                                         num_instances)) {
+         return GL_FALSE;
+      }
+
       num_vbuffers = vpv->num_inputs;
       num_velements = vpv->num_inputs;
    }
@@ -832,6 +953,8 @@ st_validate_varrays(struct gl_context *ctx,
       pipe_resource_reference(&vbuffer[attr].buffer, NULL);
       assert(!vbuffer[attr].buffer);
    }
+
+   return GL_TRUE;
 }
 
 
@@ -848,7 +971,8 @@ st_draw_vbo(struct gl_context *ctx,
             const struct _mesa_index_buffer *ib,
 	    GLboolean index_bounds_valid,
             GLuint min_index,
-            GLuint max_index)
+            GLuint max_index,
+            struct gl_transform_feedback_object *tfb_vertcount)
 {
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
@@ -901,7 +1025,10 @@ st_draw_vbo(struct gl_context *ctx,
       st_validate_state(st);
 
       if (new_array) {
-         st_validate_varrays(ctx, arrays, max_index, num_instances);
+         if (!st_validate_varrays(ctx, arrays, max_index, num_instances)) {
+            /* probably out of memory, no-op the draw call */
+            return;
+         }
       }
 
 #if 0
@@ -943,10 +1070,18 @@ st_draw_vbo(struct gl_context *ctx,
          info.min_index = min_index;
          info.max_index = max_index;
       }
+
+      /* The VBO module handles restart for the non-indexed GLDrawArrays
+       * so we only set these fields for indexed drawing:
+       */
+      info.primitive_restart = ctx->Array.PrimitiveRestart;
+      info.restart_index = ctx->Array.RestartIndex;
    }
 
-   info.primitive_restart = ctx->Array.PrimitiveRestart;
-   info.restart_index = ctx->Array.RestartIndex;
+   /* Set info.count_from_stream_output. */
+   if (tfb_vertcount) {
+      st_transform_feedback_draw_init(tfb_vertcount, &info);
+   }
 
    /* do actual drawing */
    for (i = 0; i < nr_prims; i++) {
@@ -960,20 +1095,18 @@ st_draw_vbo(struct gl_context *ctx,
          info.max_index = info.start + info.count - 1;
       }
 
-      if (info.primitive_restart) {
-         /*
-          * Handle primitive restart for drivers that doesn't support it.
-          *
-          * The VBO module handles restart inside of draw_arrays for us,
-          * but we should still remove the primitive_restart flag on the
-          * info struct, the fallback function does this for us. Just
-          * remove the flag for all drivers in this case as well.
-          */
-         if (st->sw_primitive_restart || !info.indexed)
+      if (info.count_from_stream_output) {
+         pipe->draw_vbo(pipe, &info);
+      }
+      else if (info.primitive_restart) {
+         if (st->sw_primitive_restart) {
+            /* Handle primitive restart for drivers that doesn't support it */
             handle_fallback_primitive_restart(pipe, ib, &ibuffer, &info);
-         else
+         }
+         else {
             /* don't trim, restarts might be inside index list */
             pipe->draw_vbo(pipe, &info);
+         }
       }
       else if (u_trim_pipe_prim(info.mode, &info.count))
          pipe->draw_vbo(pipe, &info);

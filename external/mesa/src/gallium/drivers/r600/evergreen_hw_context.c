@@ -99,7 +99,9 @@ static const struct r600_reg evergreen_context_reg_list[] = {
 	{R_028058_DB_DEPTH_SIZE, 0, 0, 0},
 	{R_02805C_DB_DEPTH_SLICE, 0, 0, 0},
 	{R_028140_ALU_CONST_BUFFER_SIZE_PS_0, REG_FLAG_DIRTY_ALWAYS, 0, 0},
+	{R_028144_ALU_CONST_BUFFER_SIZE_PS_1, REG_FLAG_DIRTY_ALWAYS, 0, 0},
 	{R_028180_ALU_CONST_BUFFER_SIZE_VS_0, REG_FLAG_DIRTY_ALWAYS, 0, 0},
+	{R_028184_ALU_CONST_BUFFER_SIZE_VS_1, REG_FLAG_DIRTY_ALWAYS, 0, 0},
 	{R_028200_PA_SC_WINDOW_OFFSET, 0, 0, 0},
 	{R_028204_PA_SC_WINDOW_SCISSOR_TL, 0, 0, 0},
 	{R_028208_PA_SC_WINDOW_SCISSOR_BR, 0, 0, 0},
@@ -293,7 +295,9 @@ static const struct r600_reg evergreen_context_reg_list[] = {
 	{R_028924_SQ_GS_VERT_ITEMSIZE_2, 0, 0, 0},
 	{R_028928_SQ_GS_VERT_ITEMSIZE_3, 0, 0, 0},
 	{R_028940_ALU_CONST_CACHE_PS_0, REG_FLAG_NEED_BO, S_0085F0_SH_ACTION_ENA(1), 0xFFFFFFFF},
+	{R_028944_ALU_CONST_CACHE_PS_1, REG_FLAG_NEED_BO, S_0085F0_SH_ACTION_ENA(1), 0xFFFFFFFF},
 	{R_028980_ALU_CONST_CACHE_VS_0, REG_FLAG_NEED_BO, S_0085F0_SH_ACTION_ENA(1), 0xFFFFFFFF},
+	{R_028984_ALU_CONST_CACHE_VS_1, REG_FLAG_NEED_BO, S_0085F0_SH_ACTION_ENA(1), 0xFFFFFFFF},
 	{R_028A00_PA_SU_POINT_SIZE, 0, 0, 0},
 	{R_028A04_PA_SU_POINT_MINMAX, 0, 0, 0},
 	{R_028A08_PA_SU_LINE_CNTL, 0, 0, 0},
@@ -465,7 +469,9 @@ static const struct r600_reg cayman_context_reg_list[] = {
 	{R_028058_DB_DEPTH_SIZE, 0, 0, 0},
 	{R_02805C_DB_DEPTH_SLICE, 0, 0, 0},
 	{R_028140_ALU_CONST_BUFFER_SIZE_PS_0, REG_FLAG_DIRTY_ALWAYS, 0, 0},
+	{R_028144_ALU_CONST_BUFFER_SIZE_PS_1, REG_FLAG_DIRTY_ALWAYS, 0, 0},
 	{R_028180_ALU_CONST_BUFFER_SIZE_VS_0, REG_FLAG_DIRTY_ALWAYS, 0, 0},
+	{R_028184_ALU_CONST_BUFFER_SIZE_VS_1, REG_FLAG_DIRTY_ALWAYS, 0, 0},
 	{R_028200_PA_SC_WINDOW_OFFSET, 0, 0, 0},
 	{R_028204_PA_SC_WINDOW_SCISSOR_TL, 0, 0, 0},
 	{R_028208_PA_SC_WINDOW_SCISSOR_BR, 0, 0, 0},
@@ -658,7 +664,9 @@ static const struct r600_reg cayman_context_reg_list[] = {
 	{R_028924_SQ_GS_VERT_ITEMSIZE_2, 0, 0, 0},
 	{R_028928_SQ_GS_VERT_ITEMSIZE_3, 0, 0, 0},
 	{R_028940_ALU_CONST_CACHE_PS_0, REG_FLAG_NEED_BO, S_0085F0_SH_ACTION_ENA(1), 0xFFFFFFFF},
+	{R_028944_ALU_CONST_CACHE_PS_1, REG_FLAG_NEED_BO, S_0085F0_SH_ACTION_ENA(1), 0xFFFFFFFF},
 	{R_028980_ALU_CONST_CACHE_VS_0, REG_FLAG_NEED_BO, S_0085F0_SH_ACTION_ENA(1), 0xFFFFFFFF},
+	{R_028984_ALU_CONST_CACHE_VS_1, REG_FLAG_NEED_BO, S_0085F0_SH_ACTION_ENA(1), 0xFFFFFFFF},
 	{R_028A00_PA_SU_POINT_SIZE, 0, 0, 0},
 	{R_028A04_PA_SU_POINT_MINMAX, 0, 0, 0},
 	{R_028A08_PA_SU_LINE_CNTL, 0, 0, 0},
@@ -999,12 +1007,9 @@ int evergreen_context_init(struct r600_context *ctx, struct r600_screen *screen)
 		r = -ENOMEM;
 		goto out_err;
 	}
-	ctx->pm4_ndwords = RADEON_MAX_CMDBUF_DWORDS;
 	ctx->pm4 = ctx->cs->buf;
 
 	r600_init_cs(ctx);
-	/* save 16dwords space for fence mecanism */
-	ctx->pm4_ndwords -= 16;
 	ctx->max_db = 8;
 	return 0;
 out_err:
@@ -1142,9 +1147,12 @@ void evergreen_context_draw(struct r600_context *ctx, const struct r600_draw *dr
 	if (draw->indices) {
 		ndwords = 11;
 	}
+	/* when increasing ndwords, bump the max limit too */
+	assert(ndwords <= R600_MAX_DRAW_CS_DWORDS);
 
-	/* queries need some special values */
-	if (ctx->num_query_running) {
+	/* queries need some special values
+	 * (this is non-zero if any query is active) */
+	if (ctx->num_cs_dw_queries_suspend) {
 		r600_context_reg(ctx,
 				R_028004_DB_COUNT_CONTROL,
 				S_028004_PERFECT_ZPASS_COUNTS(1),
@@ -1155,19 +1163,8 @@ void evergreen_context_draw(struct r600_context *ctx, const struct r600_draw *dr
 				S_02800C_NOOP_CULL_DISABLE(1));
 	}
 
-	/* update the max dword count to make sure we have enough space
-	 * reserved for flushing the destination caches */
-	ctx->pm4_ndwords = RADEON_MAX_CMDBUF_DWORDS - ctx->num_dest_buffers * 7 - 16;
-
-	if ((ctx->pm4_dirty_cdwords + ndwords + ctx->pm4_cdwords) > ctx->pm4_ndwords) {
-		/* need to flush */
-		r600_context_flush(ctx, RADEON_FLUSH_ASYNC);
-	}
-	/* at that point everythings is flushed and ctx->pm4_cdwords = 0 */
-	if ((ctx->pm4_dirty_cdwords + ndwords) > ctx->pm4_ndwords) {
-		R600_ERR("context is too big to be scheduled\n");
-		return;
-	}
+	r600_need_cs_space(ctx, 0, TRUE);
+	assert(ctx->pm4_cdwords + ctx->pm4_dirty_cdwords + ndwords < RADEON_MAX_CMDBUF_DWORDS);
 
 	/* enough room to copy packet */
 	LIST_FOR_EACH_ENTRY_SAFE(dirty_block, next_block, &ctx->dirty,list) {
@@ -1251,4 +1248,39 @@ void evergreen_context_flush_dest_caches(struct r600_context *ctx)
 	}
 
 	ctx->flags &= ~R600_CONTEXT_DST_CACHES_DIRTY;
+}
+
+void evergreen_flush_vgt_streamout(struct r600_context *ctx)
+{
+	ctx->pm4[ctx->pm4_cdwords++] = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+	ctx->pm4[ctx->pm4_cdwords++] = (R_0084FC_CP_STRMOUT_CNTL - EVERGREEN_CONFIG_REG_OFFSET) >> 2;
+	ctx->pm4[ctx->pm4_cdwords++] = 0;
+
+	ctx->pm4[ctx->pm4_cdwords++] = PKT3(PKT3_EVENT_WRITE, 0, 0);
+	ctx->pm4[ctx->pm4_cdwords++] = EVENT_TYPE(EVENT_TYPE_SO_VGTSTREAMOUT_FLUSH) | EVENT_INDEX(0);
+
+	ctx->pm4[ctx->pm4_cdwords++] = PKT3(PKT3_WAIT_REG_MEM, 5, 0);
+	ctx->pm4[ctx->pm4_cdwords++] = WAIT_REG_MEM_EQUAL; /* wait until the register is equal to the reference value */
+	ctx->pm4[ctx->pm4_cdwords++] = R_0084FC_CP_STRMOUT_CNTL >> 2;  /* register */
+	ctx->pm4[ctx->pm4_cdwords++] = 0;
+	ctx->pm4[ctx->pm4_cdwords++] = S_0084FC_OFFSET_UPDATE_DONE(1); /* reference value */
+	ctx->pm4[ctx->pm4_cdwords++] = S_0084FC_OFFSET_UPDATE_DONE(1); /* mask */
+	ctx->pm4[ctx->pm4_cdwords++] = 4; /* poll interval */
+}
+
+void evergreen_set_streamout_enable(struct r600_context *ctx, unsigned buffer_enable_bit)
+{
+	if (buffer_enable_bit) {
+		ctx->pm4[ctx->pm4_cdwords++] = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+		ctx->pm4[ctx->pm4_cdwords++] = (R_028B94_VGT_STRMOUT_CONFIG - EVERGREEN_CONTEXT_REG_OFFSET) >> 2;
+		ctx->pm4[ctx->pm4_cdwords++] = S_028B94_STREAMOUT_0_EN(1);
+
+		ctx->pm4[ctx->pm4_cdwords++] = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+		ctx->pm4[ctx->pm4_cdwords++] = (R_028B98_VGT_STRMOUT_BUFFER_CONFIG - EVERGREEN_CONTEXT_REG_OFFSET) >> 2;
+		ctx->pm4[ctx->pm4_cdwords++] = S_028B98_STREAM_0_BUFFER_EN(buffer_enable_bit);
+	} else {
+		ctx->pm4[ctx->pm4_cdwords++] = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+		ctx->pm4[ctx->pm4_cdwords++] = (R_028B94_VGT_STRMOUT_CONFIG - EVERGREEN_CONTEXT_REG_OFFSET) >> 2;
+		ctx->pm4[ctx->pm4_cdwords++] = S_028B94_STREAMOUT_0_EN(0);
+	}
 }

@@ -65,16 +65,66 @@ draw_get_option_use_llvm(void)
 #endif
 
 
+/**
+ * Create new draw module context with gallivm state for LLVM JIT.
+ */
+static struct draw_context *
+draw_create_context(struct pipe_context *pipe, boolean try_llvm,
+                    struct gallivm_state *gallivm)
+{
+   struct draw_context *draw = CALLOC_STRUCT( draw_context );
+   if (draw == NULL)
+      goto err_out;
+
+#if HAVE_LLVM
+   if (try_llvm && draw_get_option_use_llvm()) {
+      if (!gallivm) {
+         gallivm = gallivm_create();
+         draw->own_gallivm = gallivm;
+      }
+
+      if (!gallivm)
+         goto err_destroy;
+
+      draw->llvm = draw_llvm_create(draw, gallivm);
+
+      if (!draw->llvm)
+         goto err_destroy;
+   }
+#endif
+
+   if (!draw_init(draw))
+      goto err_destroy;
+
+   draw->pipe = pipe;
+
+   return draw;
+
+err_destroy:
+   draw_destroy( draw );
+err_out:
+   return NULL;
+}
+
 
 /**
- * Create new draw module context.
+ * Create new draw module context, with LLVM JIT.
  */
 struct draw_context *
 draw_create(struct pipe_context *pipe)
 {
-   return draw_create_gallivm(pipe, NULL);
+   return draw_create_context(pipe, TRUE, NULL);
 }
 
+
+/**
+ * Create a new draw context, without LLVM JIT.
+ */
+struct draw_context *
+draw_create_no_llvm(struct pipe_context *pipe)
+{
+   return draw_create_context(pipe, FALSE, NULL);
+}
 
 
 /**
@@ -83,34 +133,8 @@ draw_create(struct pipe_context *pipe)
 struct draw_context *
 draw_create_gallivm(struct pipe_context *pipe, struct gallivm_state *gallivm)
 {
-   struct draw_context *draw = CALLOC_STRUCT( draw_context );
-   if (draw == NULL)
-      goto fail;
-
-#if HAVE_LLVM
-   if (draw_get_option_use_llvm()) {
-      if (!gallivm) {
-         gallivm = gallivm_create();
-         draw->own_gallivm = gallivm;
-      }
-
-      if (gallivm)
-         draw->llvm = draw_llvm_create(draw, gallivm);
-   }
-#endif
-
-   if (!draw_init(draw))
-      goto fail;
-
-   draw->pipe = pipe;
-
-   return draw;
-
-fail:
-   draw_destroy( draw );
-   return NULL;
+   return draw_create_context(pipe, TRUE, gallivm);
 }
-
 
 
 boolean draw_init(struct draw_context *draw)
@@ -127,11 +151,10 @@ boolean draw_init(struct draw_context *draw)
    ASSIGN_4V( draw->plane[3],  0,  1,  0, 1 );
    ASSIGN_4V( draw->plane[4],  0,  0,  1, 1 ); /* yes these are correct */
    ASSIGN_4V( draw->plane[5],  0,  0, -1, 1 ); /* mesa's a bit wonky */
-   draw->nr_planes = 6;
    draw->clip_xy = TRUE;
    draw->clip_z = TRUE;
 
-
+   draw->pt.user.planes = (float (*) [DRAW_TOTAL_CLIP_PLANES][4]) &(draw->plane[0]);
    draw->reduced_prim = ~0; /* != any of PIPE_PRIM_x */
 
 
@@ -223,8 +246,9 @@ static void update_clip_flags( struct draw_context *draw )
    draw->guard_band_xy = (!draw->driver.bypass_clip_xy &&
                           draw->driver.guard_band_xy);
    draw->clip_z = (!draw->driver.bypass_clip_z &&
-                   !draw->depth_clamp);
-   draw->clip_user = (draw->nr_planes > 6);
+                   draw->rasterizer && draw->rasterizer->depth_clip);
+   draw->clip_user = draw->rasterizer &&
+                     draw->rasterizer->clip_plane_enable != 0;
 }
 
 /**
@@ -240,8 +264,8 @@ void draw_set_rasterizer_state( struct draw_context *draw,
 
       draw->rasterizer = raster;
       draw->rast_handle = rast_handle;
-
-  }
+      update_clip_flags(draw);
+   }
 }
 
 /* With a little more work, llvmpipe will be able to turn this off and
@@ -287,14 +311,7 @@ void draw_set_clip_state( struct draw_context *draw,
 {
    draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
 
-   assert(clip->nr <= PIPE_MAX_CLIP_PLANES);
-   memcpy(&draw->plane[6], clip->ucp, clip->nr * sizeof(clip->ucp[0]));
-   draw->nr_planes = 6 + clip->nr;
-   draw->depth_clamp = clip->depth_clamp;
-
-   draw->pt.user.planes = (float (*) [DRAW_TOTAL_CLIP_PLANES][4]) &(draw->plane[0]);
-
-   update_clip_flags(draw);
+   memcpy(&draw->plane[6], clip->ucp, sizeof(clip->ucp));
 }
 
 
@@ -675,6 +692,22 @@ draw_current_shader_position_output(const struct draw_context *draw)
 
 
 /**
+ * Return the index of the shader output which will contain the
+ * vertex position.
+ */
+uint
+draw_current_shader_clipvertex_output(const struct draw_context *draw)
+{
+   return draw->vs.clipvertex_output;
+}
+
+uint
+draw_current_shader_clipdistance_output(const struct draw_context *draw, int index)
+{
+   return draw->vs.clipdistance_output[index];
+}
+
+/**
  * Return a pointer/handle for a driver/CSO rasterizer object which
  * disabled culling, stippling, unfilled tris, etc.
  * This is used by some pipeline stages (such as wide_point, aa_line
@@ -708,25 +741,34 @@ draw_get_rasterizer_no_cull( struct draw_context *draw,
 }
 
 void
+draw_set_mapped_so_targets(struct draw_context *draw,
+                           int num_targets,
+                           struct draw_so_target *targets[PIPE_MAX_SO_BUFFERS])
+{
+   int i;
+
+   for (i = 0; i < num_targets; i++)
+      draw->so.targets[i] = targets[i];
+   for (i = num_targets; i < PIPE_MAX_SO_BUFFERS; i++)
+      draw->so.targets[i] = NULL;
+
+   draw->so.num_targets = num_targets;
+}
+
+void
 draw_set_mapped_so_buffers(struct draw_context *draw,
                            void *buffers[PIPE_MAX_SO_BUFFERS],
                            unsigned num_buffers)
 {
-   int i;
-
-   for (i = 0; i < num_buffers; ++i) {
-      draw->so.buffers[i] = buffers[i];
-   }
-   draw->so.num_buffers = num_buffers;
 }
 
 void
 draw_set_so_state(struct draw_context *draw,
-                  struct pipe_stream_output_state *state)
+                  struct pipe_stream_output_info *state)
 {
    memcpy(&draw->so.state,
           state,
-          sizeof(struct pipe_stream_output_state));
+          sizeof(struct pipe_stream_output_info));
 }
 
 void

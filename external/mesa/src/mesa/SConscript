@@ -40,7 +40,6 @@ main_sources = [
     'main/api_arrayelt.c',
     'main/api_exec.c',
     'main/api_loopback.c',
-    'main/api_noop.c',
     'main/api_validate.c',
     'main/accum.c',
     'main/arbprogram.c',
@@ -59,7 +58,6 @@ main_sources = [
     'main/cpuinfo.c',
     'main/debug.c',
     'main/depth.c',
-    'main/depthstencil.c',
     'main/dlist.c',
     'main/dlopen.c',
     'main/drawpix.c',
@@ -75,6 +73,7 @@ main_sources = [
     'main/ffvertex_prog.c',
     'main/fog.c',
     'main/formats.c',
+    'main/format_pack.c',
     'main/format_unpack.c',
     'main/framebuffer.c',
     'main/get.c',
@@ -117,6 +116,7 @@ main_sources = [
     'main/texcompress_rgtc.c',
     'main/texcompress_s3tc.c',
     'main/texcompress_fxt1.c',
+    'main/texcompress_etc.c',
     'main/texenv.c',
     'main/texformat.c',
     'main/texgen.c',
@@ -149,14 +149,9 @@ math_sources = [
     'math/m_xform.c',
 ]
 
-math_xform_sources = [
-    'math/m_xform.c'
-]
-
 swrast_sources = [
     'swrast/s_aaline.c',
     'swrast/s_aatriangle.c',
-    'swrast/s_accum.c',
     'swrast/s_alpha.c',
     'swrast/s_atifragshader.c',
     'swrast/s_bitmap.c',
@@ -174,7 +169,7 @@ swrast_sources = [
     'swrast/s_logic.c',
     'swrast/s_masking.c',
     'swrast/s_points.c',
-    'swrast/s_readpix.c',
+    'swrast/s_renderbuffer.c',
     'swrast/s_span.c',
     'swrast/s_stencil.c',
     'swrast/s_texcombine.c',
@@ -218,6 +213,7 @@ vbo_sources = [
     'vbo/vbo_exec_array.c',
     'vbo/vbo_exec_draw.c',
     'vbo/vbo_exec_eval.c',
+    'vbo/vbo_noop.c',
     'vbo/vbo_rebase.c',
     'vbo/vbo_split.c',
     'vbo/vbo_split_copy.c',
@@ -244,7 +240,6 @@ statetracker_sources = [
     'state_tracker/st_atom_stipple.c',
     'state_tracker/st_atom_texture.c',
     'state_tracker/st_atom_viewport.c',
-    'state_tracker/st_cb_accum.c',
     'state_tracker/st_cb_bitmap.c',
     'state_tracker/st_cb_blit.c',
     'state_tracker/st_cb_bufferobjects.c',
@@ -306,7 +301,6 @@ program_sources = [
     'program/prog_parameter_layout.c',
     'program/prog_print.c',
     'program/prog_statevars.c',
-    'program/prog_uniform.c',
     'program/programopt.c',
     'program/sampler.cpp',
     'program/symbol_table.c',
@@ -323,7 +317,6 @@ common_driver_sources =	[
 mesa_sources = (
     main_sources +
     math_sources +
-    math_xform_sources +
     program_sources +
     vbo_sources +
     tnl_sources +

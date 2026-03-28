@@ -74,7 +74,7 @@ struct {
     [BRW_OPCODE_SEND] = { .name = "send", .nsrc = 1, .ndst = 1 },
     [BRW_OPCODE_SENDC] = { .name = "sendc", .nsrc = 1, .ndst = 1 },
     [BRW_OPCODE_NOP] = { .name = "nop", .nsrc = 0, .ndst = 0 },
-    [BRW_OPCODE_JMPI] = { .name = "jmpi", .nsrc = 1, .ndst = 0 },
+    [BRW_OPCODE_JMPI] = { .name = "jmpi", .nsrc = 0, .ndst = 0 },
     [BRW_OPCODE_IF] = { .name = "if", .nsrc = 2, .ndst = 0 },
     [BRW_OPCODE_IFF] = { .name = "iff", .nsrc = 2, .ndst = 1 },
     [BRW_OPCODE_WHILE] = { .name = "while", .nsrc = 2, .ndst = 0 },
@@ -932,6 +932,8 @@ int brw_disasm (FILE *file, struct brw_instruction *inst, int gen)
 			    inst->header.opcode == BRW_OPCODE_ENDIF ||
 			    inst->header.opcode == BRW_OPCODE_WHILE)) {
        format (file, " %d", inst->bits1.branch_gen6.jump_count);
+    } else if (inst->header.opcode == BRW_OPCODE_JMPI) {
+       format (file, " %d", inst->bits3.d);
     }
 
     if (opcode[inst->header.opcode].nsrc > 0) {
@@ -980,7 +982,13 @@ int brw_disasm (FILE *file, struct brw_instruction *inst, int gen)
 			    inst->bits3.math.precision, &space);
 	    break;
 	case BRW_SFID_SAMPLER:
-	    if (gen >= 5) {
+	    if (gen >= 7) {
+		format (file, " (%d, %d, %d, %d)",
+			inst->bits3.sampler_gen7.binding_table_index,
+			inst->bits3.sampler_gen7.sampler,
+			inst->bits3.sampler_gen7.msg_type,
+			inst->bits3.sampler_gen7.simd_mode);
+	    } else if (gen >= 5) {
 		format (file, " (%d, %d, %d, %d)",
 			inst->bits3.sampler_gen5.binding_table_index,
 			inst->bits3.sampler_gen5.sampler,
@@ -1021,7 +1029,18 @@ int brw_disasm (FILE *file, struct brw_instruction *inst, int gen)
 	    break;
 
 	case BRW_SFID_DATAPORT_WRITE:
-	    if (gen >= 6) {
+	    if (gen >= 7) {
+		format (file, " (");
+
+		err |= control (file, "DP rc message type",
+				dp_rc_msg_type_gen6,
+				inst->bits3.gen7_dp.msg_type, &space);
+
+		format (file, ", %d, %d, %d)",
+			inst->bits3.gen7_dp.binding_table_index,
+			inst->bits3.gen7_dp.msg_control,
+			inst->bits3.gen7_dp.msg_type);
+	    } else if (gen == 6) {
 		format (file, " (");
 
 		err |= control (file, "DP rc message type",

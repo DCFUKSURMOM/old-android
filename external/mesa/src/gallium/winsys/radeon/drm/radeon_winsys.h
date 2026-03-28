@@ -45,7 +45,9 @@
 #include "pipe/p_state.h"
 
 #define RADEON_MAX_CMDBUF_DWORDS (16 * 1024)
-#define RADEON_FLUSH_ASYNC       (1 << 0)
+
+#define RADEON_FLUSH_ASYNC             (1 << 0)
+#define RADEON_FLUSH_KEEP_TILING_FLAGS (1 << 1) /* needs DRM 2.12.0 */
 
 /* Tiling flags. */
 enum radeon_bo_layout {
@@ -54,6 +56,11 @@ enum radeon_bo_layout {
     RADEON_LAYOUT_SQUARETILED,
 
     RADEON_LAYOUT_UNKNOWN
+};
+
+enum radeon_bo_domain { /* bitfield */
+    RADEON_DOMAIN_GTT  = 2,
+    RADEON_DOMAIN_VRAM = 4
 };
 
 enum radeon_bo_usage { /* bitfield */
@@ -135,13 +142,14 @@ struct radeon_winsys {
      * \param size      The size to allocate.
      * \param alignment An alignment of the buffer in memory.
      * \param bind      A bitmask of the PIPE_BIND_* flags.
-     * \param usage     A bitmask of the PIPE_USAGE_* flags.
+     * \param domain    A bitmask of the RADEON_DOMAIN_* flags.
      * \return          The created buffer object.
      */
     struct pb_buffer *(*buffer_create)(struct radeon_winsys *ws,
                                        unsigned size,
                                        unsigned alignment,
-                                       unsigned bind, unsigned usage);
+                                       unsigned bind,
+                                       enum radeon_bo_domain domain);
 
     struct radeon_winsys_cs_handle *(*buffer_get_cs_handle)(
             struct pb_buffer *buf);
@@ -269,12 +277,14 @@ struct radeon_winsys {
      *
      * \param cs  A command stream to add buffer for validation against.
      * \param buf A winsys buffer to validate.
-     * \param usage  Whether the buffer is used for read and/or write.
+     * \param usage   Whether the buffer is used for read and/or write.
+     * \param domain  Bitmask of the RADEON_DOMAIN_* flags.
      * \return Relocation index.
      */
     unsigned (*cs_add_reloc)(struct radeon_winsys_cs *cs,
                              struct radeon_winsys_cs_handle *buf,
-                             enum radeon_bo_usage usage);
+                             enum radeon_bo_usage usage,
+                             enum radeon_bo_domain domain);
 
     /**
      * Return TRUE if there is enough memory in VRAM and GTT for the relocs
@@ -329,7 +339,7 @@ struct radeon_winsys {
      *
      * \param cs        A command stream.
      * \param fid       Feature ID, one of RADEON_FID_*
-     * \param enable	Whether to enable or disable the feature.
+     * \param enable    Whether to enable or disable the feature.
      */
     boolean (*cs_request_feature)(struct radeon_winsys_cs *cs,
                                   enum radeon_feature_id fid,

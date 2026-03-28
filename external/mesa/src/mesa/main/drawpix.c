@@ -30,6 +30,7 @@
 #include "enums.h"
 #include "feedback.h"
 #include "framebuffer.h"
+#include "image.h"
 #include "mfeatures.h"
 #include "pbo.h"
 #include "readpix.h"
@@ -76,11 +77,28 @@ _mesa_DrawPixels( GLsizei width, GLsizei height,
       goto end;      /* the error code was recorded */
    }
 
+   /* GL 3.0 introduced a new restriction on glDrawPixels() over what was in
+    * GL_EXT_texture_integer.  From section 3.7.4 ("Rasterization of Pixel
+    * Rectangles) on page 151 of the GL 3.0 specification:
+    *
+    *     "If format contains integer components, as shown in table 3.6, an
+    *      INVALID OPERATION error is generated."
+    *
+    * Since DrawPixels rendering would be merely undefined if not an error (due
+    * to a lack of defined mapping from integer data to gl_Color fragment shader
+    * input), NVIDIA's implementation also just returns this error despite
+    * exposing GL_EXT_texture_integer, just return an error regardless.
+    */
+   if (_mesa_is_integer_format(format)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glDrawPixels(integer format)");
+      goto end;
+   }
+
    if (_mesa_error_check_format_type(ctx, format, type, GL_TRUE)) {
       goto end;      /* the error code was recorded */
    }
 
-   if (ctx->TransformFeedback.RasterDiscard) {
+   if (ctx->RasterDiscard) {
       goto end;
    }
 
@@ -185,6 +203,12 @@ _mesa_CopyPixels( GLint srcx, GLint srcy, GLsizei width, GLsizei height,
       goto end;
    }
 
+   if (ctx->ReadBuffer->Name != 0 && ctx->ReadBuffer->Visual.samples > 0) {
+      _mesa_error(ctx, GL_INVALID_FRAMEBUFFER_OPERATION,
+		  "glCopyPixels(multisample FBO)");
+      goto end;
+   }
+
    if (!_mesa_source_buffer_exists(ctx, type) ||
        !_mesa_dest_buffer_exists(ctx, type)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
@@ -192,7 +216,7 @@ _mesa_CopyPixels( GLint srcx, GLint srcy, GLsizei width, GLsizei height,
       goto end;
    }
 
-   if (ctx->TransformFeedback.RasterDiscard) {
+   if (ctx->RasterDiscard) {
       goto end;
    }
 
@@ -250,7 +274,7 @@ _mesa_Bitmap( GLsizei width, GLsizei height,
       return;
    }
 
-   if (ctx->TransformFeedback.RasterDiscard)
+   if (ctx->RasterDiscard)
       return;
 
    if (ctx->RenderMode == GL_RENDER) {

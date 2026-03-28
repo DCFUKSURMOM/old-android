@@ -25,6 +25,7 @@
 
 extern "C" {
 #include "brw_eu.h"
+#include "main/macros.h"
 };
 
 using namespace brw;
@@ -35,7 +36,7 @@ int
 vec4_visitor::setup_attributes(int payload_reg)
 {
    int nr_attributes;
-   int attribute_map[VERT_ATTRIB_MAX];
+   int attribute_map[VERT_ATTRIB_MAX + 1];
 
    nr_attributes = 0;
    for (int i = 0; i < VERT_ATTRIB_MAX; i++) {
@@ -43,6 +44,15 @@ vec4_visitor::setup_attributes(int payload_reg)
 	 attribute_map[i] = payload_reg + nr_attributes;
 	 nr_attributes++;
       }
+   }
+
+   /* VertexID is stored by the VF as the last vertex element, but we
+    * don't represent it with a flag in inputs_read, so we call it
+    * VERT_ATTRIB_MAX.
+    */
+   if (prog_data->uses_vertexid) {
+      attribute_map[VERT_ATTRIB_MAX] = payload_reg + nr_attributes;
+      nr_attributes++;
    }
 
    foreach_list(node, &this->instructions) {
@@ -85,6 +95,13 @@ vec4_visitor::setup_attributes(int payload_reg)
       nr_attributes = 1;
 
    prog_data->urb_read_length = (nr_attributes + 1) / 2;
+
+   unsigned vue_entries = MAX2(nr_attributes, c->vue_map.num_slots);
+
+   if (intel->gen == 6)
+      c->prog_data.urb_entry_size = ALIGN(vue_entries, 8) / 8;
+   else
+      c->prog_data.urb_entry_size = ALIGN(vue_entries, 4) / 4;
 
    return payload_reg + nr_attributes;
 }
@@ -283,6 +300,18 @@ vec4_visitor::generate_math1_gen6(vec4_instruction *inst,
 }
 
 void
+vec4_visitor::generate_math2_gen7(vec4_instruction *inst,
+				  struct brw_reg dst,
+				  struct brw_reg src0,
+				  struct brw_reg src1)
+{
+   brw_math2(p,
+	     dst,
+	     brw_math_function(inst->opcode),
+	     src0, src1);
+}
+
+void
 vec4_visitor::generate_math2_gen6(vec4_instruction *inst,
 				  struct brw_reg dst,
 				  struct brw_reg src0,
@@ -331,6 +360,120 @@ vec4_visitor::generate_math2_gen4(vec4_instruction *inst,
 	    op0,
 	    BRW_MATH_DATA_VECTOR,
 	    BRW_MATH_PRECISION_FULL);
+}
+
+void
+vec4_visitor::generate_tex(vec4_instruction *inst,
+			   struct brw_reg dst,
+			   struct brw_reg src)
+{
+   int msg_type = -1;
+
+   if (intel->gen >= 5) {
+      switch (inst->opcode) {
+      case SHADER_OPCODE_TEX:
+      case SHADER_OPCODE_TXL:
+	 if (inst->shadow_compare) {
+	    msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LOD_COMPARE;
+	 } else {
+	    msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LOD;
+	 }
+	 break;
+      case SHADER_OPCODE_TXD:
+	 /* There is no sample_d_c message; comparisons are done manually. */
+	 msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_DERIVS;
+	 break;
+      case SHADER_OPCODE_TXF:
+	 msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_LD;
+	 break;
+      case SHADER_OPCODE_TXS:
+	 msg_type = GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO;
+	 break;
+      default:
+	 assert(!"should not get here: invalid VS texture opcode");
+	 break;
+      }
+   } else {
+      switch (inst->opcode) {
+      case SHADER_OPCODE_TEX:
+      case SHADER_OPCODE_TXL:
+	 if (inst->shadow_compare) {
+	    msg_type = BRW_SAMPLER_MESSAGE_SIMD4X2_SAMPLE_LOD_COMPARE;
+	    assert(inst->mlen == 3);
+	 } else {
+	    msg_type = BRW_SAMPLER_MESSAGE_SIMD4X2_SAMPLE_LOD;
+	    assert(inst->mlen == 2);
+	 }
+	 break;
+      case SHADER_OPCODE_TXD:
+	 /* There is no sample_d_c message; comparisons are done manually. */
+	 msg_type = BRW_SAMPLER_MESSAGE_SIMD4X2_SAMPLE_GRADIENTS;
+	 assert(inst->mlen == 4);
+	 break;
+      case SHADER_OPCODE_TXF:
+	 msg_type = BRW_SAMPLER_MESSAGE_SIMD4X2_LD;
+	 assert(inst->mlen == 2);
+	 break;
+      case SHADER_OPCODE_TXS:
+	 msg_type = BRW_SAMPLER_MESSAGE_SIMD4X2_RESINFO;
+	 assert(inst->mlen == 2);
+	 break;
+      default:
+	 assert(!"should not get here: invalid VS texture opcode");
+	 break;
+      }
+   }
+
+   assert(msg_type != -1);
+
+   /* Load the message header if present.  If there's a texture offset, we need
+    * to set it up explicitly and load the offset bitfield.  Otherwise, we can
+    * use an implied move from g0 to the first message register.
+    */
+   if (inst->texture_offset) {
+      /* Explicitly set up the message header by copying g0 to the MRF. */
+      brw_MOV(p, retype(brw_message_reg(inst->base_mrf), BRW_REGISTER_TYPE_UD),
+	         retype(brw_vec8_grf(0, 0), BRW_REGISTER_TYPE_UD));
+
+      /* Then set the offset bits in DWord 2. */
+      brw_set_access_mode(p, BRW_ALIGN_1);
+      brw_MOV(p,
+	      retype(brw_vec1_reg(BRW_MESSAGE_REGISTER_FILE, inst->base_mrf, 2),
+		     BRW_REGISTER_TYPE_UD),
+	      brw_imm_uw(inst->texture_offset));
+      brw_set_access_mode(p, BRW_ALIGN_16);
+   } else if (inst->header_present) {
+      /* Set up an implied move from g0 to the MRF. */
+      src = brw_vec8_grf(0, 0);
+   }
+
+   uint32_t return_format;
+
+   switch (dst.type) {
+   case BRW_REGISTER_TYPE_D:
+      return_format = BRW_SAMPLER_RETURN_FORMAT_SINT32;
+      break;
+   case BRW_REGISTER_TYPE_UD:
+      return_format = BRW_SAMPLER_RETURN_FORMAT_UINT32;
+      break;
+   default:
+      return_format = BRW_SAMPLER_RETURN_FORMAT_FLOAT32;
+      break;
+   }
+
+   brw_SAMPLE(p,
+	      dst,
+	      inst->base_mrf,
+	      src,
+	      SURF_INDEX_TEXTURE(inst->sampler),
+	      inst->sampler,
+	      WRITEMASK_XYZW,
+	      msg_type,
+	      1, /* response length */
+	      inst->mlen,
+	      inst->header_present,
+	      BRW_SAMPLER_SIMD_MODE_SIMD4X2,
+	      return_format);
 }
 
 void
@@ -504,6 +647,23 @@ vec4_visitor::generate_pull_constant_load(vec4_instruction *inst,
 					  struct brw_reg dst,
 					  struct brw_reg index)
 {
+   if (intel->gen == 7) {
+      gen6_resolve_implied_move(p, &index, inst->base_mrf);
+      brw_instruction *insn = brw_next_insn(p, BRW_OPCODE_SEND);
+      brw_set_dest(p, insn, dst);
+      brw_set_src0(p, insn, index);
+      brw_set_sampler_message(p, insn,
+                              SURF_INDEX_VERT_CONST_BUFFER,
+                              0, /* LD message ignores sampler unit */
+                              GEN5_SAMPLER_MESSAGE_SAMPLE_LD,
+                              1, /* rlen */
+                              1, /* mlen */
+                              false, /* no header */
+                              BRW_SAMPLER_SIMD_MODE_SIMD4X2,
+                              0);
+      return;
+   }
+
    struct brw_reg header = brw_vec8_grf(0, 0);
 
    gen6_resolve_implied_move(p, &header, inst->base_mrf);
@@ -552,9 +712,10 @@ vec4_visitor::generate_vs_instruction(vec4_instruction *instruction,
    case SHADER_OPCODE_LOG2:
    case SHADER_OPCODE_SIN:
    case SHADER_OPCODE_COS:
-      if (intel->gen >= 6) {
+      if (intel->gen == 6) {
 	 generate_math1_gen6(inst, dst, src[0]);
       } else {
+	 /* Also works for Gen7. */
 	 generate_math1_gen4(inst, dst, src[0]);
       }
       break;
@@ -562,11 +723,21 @@ vec4_visitor::generate_vs_instruction(vec4_instruction *instruction,
    case SHADER_OPCODE_POW:
    case SHADER_OPCODE_INT_QUOTIENT:
    case SHADER_OPCODE_INT_REMAINDER:
-      if (intel->gen >= 6) {
+      if (intel->gen >= 7) {
+	 generate_math2_gen7(inst, dst, src[0], src[1]);
+      } else if (intel->gen == 6) {
 	 generate_math2_gen6(inst, dst, src[0], src[1]);
       } else {
 	 generate_math2_gen4(inst, dst, src[0], src[1]);
       }
+      break;
+
+   case SHADER_OPCODE_TEX:
+   case SHADER_OPCODE_TXD:
+   case SHADER_OPCODE_TXF:
+   case SHADER_OPCODE_TXL:
+   case SHADER_OPCODE_TXS:
+      generate_tex(inst, dst, src[0]);
       break;
 
    case VS_OPCODE_URB_WRITE:
@@ -651,14 +822,6 @@ vec4_visitor::generate_code()
    int last_native_inst = 0;
    const char *last_annotation_string = NULL;
    ir_instruction *last_annotation_ir = NULL;
-
-   int loop_stack_array_size = 16;
-   int loop_stack_depth = 0;
-   brw_instruction **loop_stack =
-      rzalloc_array(this->mem_ctx, brw_instruction *, loop_stack_array_size);
-   int *if_depth_in_loop =
-      rzalloc_array(this->mem_ctx, int, loop_stack_array_size);
-
 
    if (unlikely(INTEL_DEBUG & DEBUG_VS)) {
       printf("Native code for vertex shader %d:\n", prog->Name);
@@ -773,7 +936,6 @@ vec4_visitor::generate_code()
 	    struct brw_instruction *brw_inst = brw_IF(p, BRW_EXECUTE_8);
 	    brw_inst->header.predicate_control = inst->predicate;
 	 }
-	 if_depth_in_loop[loop_stack_depth]++;
 	 break;
 
       case BRW_OPCODE_ELSE:
@@ -781,59 +943,27 @@ vec4_visitor::generate_code()
 	 break;
       case BRW_OPCODE_ENDIF:
 	 brw_ENDIF(p);
-	 if_depth_in_loop[loop_stack_depth]--;
 	 break;
 
       case BRW_OPCODE_DO:
-	 loop_stack[loop_stack_depth++] = brw_DO(p, BRW_EXECUTE_8);
-	 if (loop_stack_array_size <= loop_stack_depth) {
-	    loop_stack_array_size *= 2;
-	    loop_stack = reralloc(this->mem_ctx, loop_stack, brw_instruction *,
-				  loop_stack_array_size);
-	    if_depth_in_loop = reralloc(this->mem_ctx, if_depth_in_loop, int,
-				        loop_stack_array_size);
-	 }
-	 if_depth_in_loop[loop_stack_depth] = 0;
+	 brw_DO(p, BRW_EXECUTE_8);
 	 break;
 
       case BRW_OPCODE_BREAK:
-	 brw_BREAK(p, if_depth_in_loop[loop_stack_depth]);
+	 brw_BREAK(p);
 	 brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 	 break;
       case BRW_OPCODE_CONTINUE:
 	 /* FINISHME: We need to write the loop instruction support still. */
 	 if (intel->gen >= 6)
-	    gen6_CONT(p, loop_stack[loop_stack_depth - 1]);
+	    gen6_CONT(p);
 	 else
-	    brw_CONT(p, if_depth_in_loop[loop_stack_depth]);
+	    brw_CONT(p);
 	 brw_set_predicate_control(p, BRW_PREDICATE_NONE);
 	 break;
 
-      case BRW_OPCODE_WHILE: {
-	 struct brw_instruction *inst0, *inst1;
-	 GLuint br = 1;
-
-	 if (intel->gen >= 5)
-	    br = 2;
-
-	 assert(loop_stack_depth > 0);
-	 loop_stack_depth--;
-	 inst0 = inst1 = brw_WHILE(p, loop_stack[loop_stack_depth]);
-	 if (intel->gen < 6) {
-	    /* patch all the BREAK/CONT instructions from last BGNLOOP */
-	    while (inst0 > loop_stack[loop_stack_depth]) {
-	       inst0--;
-	       if (inst0->header.opcode == BRW_OPCODE_BREAK &&
-		   inst0->bits3.if_else.jump_count == 0) {
-		  inst0->bits3.if_else.jump_count = br * (inst1 - inst0 + 1);
-	    }
-	       else if (inst0->header.opcode == BRW_OPCODE_CONTINUE &&
-			inst0->bits3.if_else.jump_count == 0) {
-		  inst0->bits3.if_else.jump_count = br * (inst1 - inst0);
-	       }
-	    }
-	 }
-      }
+      case BRW_OPCODE_WHILE:
+	 brw_WHILE(p);
 	 break;
 
       default:
@@ -860,9 +990,6 @@ vec4_visitor::generate_code()
    if (unlikely(INTEL_DEBUG & DEBUG_VS)) {
       printf("\n");
    }
-
-   ralloc_free(loop_stack);
-   ralloc_free(if_depth_in_loop);
 
    brw_set_uip_jip(p);
 

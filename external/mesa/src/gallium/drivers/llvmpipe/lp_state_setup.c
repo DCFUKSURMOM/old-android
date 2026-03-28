@@ -837,7 +837,13 @@ cull_setup_variants(struct llvmpipe_context *lp)
    llvmpipe_finish(pipe, __FUNCTION__);
 
    for (i = 0; i < LP_MAX_SETUP_VARIANTS / 4; i++) {
-      struct lp_setup_variant_list_item *item = last_elem(&lp->setup_variants_list);
+      struct lp_setup_variant_list_item *item;
+      if (is_empty_list(&lp->setup_variants_list)) {
+         break;
+      }
+      item = last_elem(&lp->setup_variants_list);
+      assert(item);
+      assert(item->base);
       remove_setup_variant(lp, item->base);
    }
 }
@@ -874,10 +880,11 @@ llvmpipe_update_setup(struct llvmpipe_context *lp)
       }
 
       variant = generate_setup_variant(lp->gallivm, key, lp);
-      insert_at_head(&lp->setup_variants_list, &variant->list_item_global);
-      lp->nr_setup_variants++;
-
-      llvmpipe_variant_count++;
+      if (variant) {
+         insert_at_head(&lp->setup_variants_list, &variant->list_item_global);
+         lp->nr_setup_variants++;
+         llvmpipe_variant_count++;
+      }
    }
 
    lp_setup_set_setup_variant(lp->setup,

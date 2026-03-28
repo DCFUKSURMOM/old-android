@@ -349,26 +349,10 @@ static void bind_indices( struct gl_context *ctx,
 
    if (_mesa_is_bufferobj(ib->obj) && !_mesa_bufferobj_mapped(ib->obj)) {
       /* if the buffer object isn't mapped yet, map it now */
-      unsigned map_size;
-
-      switch (ib->type) {
-      case GL_UNSIGNED_BYTE:
-	 map_size = ib->count * sizeof(GLubyte);
-	 break;
-      case GL_UNSIGNED_SHORT:
-	 map_size = ib->count * sizeof(GLushort);
-	 break;
-      case GL_UNSIGNED_INT:
-	 map_size = ib->count * sizeof(GLuint);
-	 break;
-      default:
-	 assert(0);
-	 map_size = 0;
-      }
-
       bo[*nr_bo] = ib->obj;
       (*nr_bo)++;
-      ptr = ctx->Driver.MapBufferRange(ctx, (GLsizeiptr) ib->ptr, map_size,
+      ptr = ctx->Driver.MapBufferRange(ctx, (GLsizeiptr) ib->ptr,
+                                       ib->count * vbo_sizeof_ib_type(ib->type),
 				       GL_MAP_READ_BIT, ib->obj);
       assert(ib->obj->Pointer);
    } else {
@@ -430,7 +414,8 @@ void _tnl_vbo_draw_prims(struct gl_context *ctx,
 			 const struct _mesa_index_buffer *ib,
 			 GLboolean index_bounds_valid,
 			 GLuint min_index,
-			 GLuint max_index)
+			 GLuint max_index,
+			 struct gl_transform_feedback_object *tfb_vertcount)
 {
    if (!index_bounds_valid)
       vbo_get_minmax_index(ctx, prim, ib, &min_index, &max_index);

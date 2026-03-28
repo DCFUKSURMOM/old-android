@@ -30,6 +30,8 @@
 #include "util/u_hash_table.h"
 #include "os/os_thread.h"
 
+#define R600_MAX_DRAW_CS_DWORDS 11
+
 #define PKT_COUNT_C                     0xC000FFFF
 #define PKT_COUNT_S(x)                  (((x) & 0x3FFF) << 16)
 
@@ -54,6 +56,9 @@ struct r600_reg {
 /*
  * r600_hw_context.c
  */
+void r600_need_cs_space(struct r600_context *ctx, unsigned num_dw,
+			boolean count_draw_in);
+
 void r600_context_bo_flush(struct r600_context *ctx, unsigned flush_flags,
 				unsigned flush_mask, struct r600_resource *rbo);
 struct r600_resource *r600_context_reg_bo(struct r600_context *ctx, unsigned offset);
@@ -71,6 +76,13 @@ void r600_context_reg(struct r600_context *ctx,
 void r600_init_cs(struct r600_context *ctx);
 int r600_resource_init(struct r600_context *ctx, struct r600_range *range, unsigned offset, unsigned nblocks, unsigned stride, struct r600_reg *reg, int nreg, unsigned offset_base);
 
+/*
+ * evergreen_hw_context.c
+ */
+void evergreen_flush_vgt_streamout(struct r600_context *ctx);
+void evergreen_set_streamout_enable(struct r600_context *ctx, unsigned buffer_enable_bit);
+
+
 static INLINE unsigned r600_context_bo_reloc(struct r600_context *ctx, struct r600_resource *rbo,
 					     enum radeon_bo_usage usage)
 {
@@ -78,7 +90,7 @@ static INLINE unsigned r600_context_bo_reloc(struct r600_context *ctx, struct r6
 
 	assert(usage);
 
-	reloc_index = ctx->ws->cs_add_reloc(ctx->cs, rbo->cs_buf, usage);
+	reloc_index = ctx->ws->cs_add_reloc(ctx->cs, rbo->cs_buf, usage, rbo->domains);
 	if (reloc_index >= ctx->creloc)
 		ctx->creloc = reloc_index+1;
 

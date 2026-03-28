@@ -376,6 +376,10 @@ setup_bitmap_vertex_data(struct st_context *st, bool normalized,
                                            PIPE_USAGE_STREAM,
                                            max_slots *
                                            sizeof(st->bitmap.vertices));
+      if (!st->bitmap.vbuf) {
+         /* out of memory */
+         return 0;
+      }
    }
 
    /* Positions are in clip coords since we need to do clipping in case
@@ -479,6 +483,7 @@ draw_bitmap_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    cso_save_fragment_sampler_views(cso);
    cso_save_viewport(cso);
    cso_save_fragment_shader(cso);
+   cso_save_stream_outputs(cso);
    cso_save_vertex_shader(cso);
    cso_save_geometry_shader(cso);
    cso_save_vertex_elements(cso);
@@ -538,6 +543,7 @@ draw_bitmap_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    }
 
    cso_set_vertex_elements(cso, 3, st->velems_util_draw);
+   cso_set_stream_outputs(st->cso_context, 0, NULL, 0);
 
    /* convert Z from [0,1] to [-1,-1] to match viewport Z scale/bias */
    z = z * 2.0f - 1.0f;
@@ -547,11 +553,12 @@ draw_bitmap_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
                                      sv->texture->target != PIPE_TEXTURE_RECT,
                                      x, y, width, height, z, color);
 
-   util_draw_vertex_buffer(pipe, st->cso_context, st->bitmap.vbuf, offset,
-                           PIPE_PRIM_TRIANGLE_FAN,
-                           4,  /* verts */
-                           3); /* attribs/vert */
-
+   if (st->bitmap.vbuf) {
+      util_draw_vertex_buffer(pipe, st->cso_context, st->bitmap.vbuf, offset,
+                              PIPE_PRIM_TRIANGLE_FAN,
+                              4,  /* verts */
+                              3); /* attribs/vert */
+   }
 
    /* restore state */
    cso_restore_rasterizer(cso);
@@ -563,6 +570,7 @@ draw_bitmap_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    cso_restore_geometry_shader(cso);
    cso_restore_vertex_elements(cso);
    cso_restore_vertex_buffers(cso);
+   cso_restore_stream_outputs(cso);
 }
 
 
@@ -862,6 +870,7 @@ st_init_bitmap(struct st_context *st)
    /* init baseline rasterizer state once */
    memset(&st->bitmap.rasterizer, 0, sizeof(st->bitmap.rasterizer));
    st->bitmap.rasterizer.gl_rasterization_rules = 1;
+   st->bitmap.rasterizer.depth_clip = 1;
 
    /* find a usable texture format */
    if (screen->is_format_supported(screen, PIPE_FORMAT_I8_UNORM,

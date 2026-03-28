@@ -31,8 +31,8 @@
 #include "main/macros.h"
 #include "main/image.h"
 #include "main/bufferobj.h"
+#include "main/readpix.h"
 #include "main/state.h"
-#include "swrast/swrast.h"
 
 #include "intel_screen.h"
 #include "intel_context.h"
@@ -120,8 +120,9 @@ do_blit_readpixels(struct gl_context * ctx,
 	 rowLength = -rowLength;
    }
 
-   dst_offset = (GLintptr) _mesa_image_address(2, pack, pixels, width, height,
-					       format, type, 0, 0, 0);
+   dst_offset = (GLintptr)pixels;
+   dst_offset += _mesa_image_offset(2, pack, width, height,
+				    format, type, 0, 0, 0);
 
    if (!_mesa_clip_copytexsubimage(ctx,
 				   &dst_x, &dst_y,
@@ -188,16 +189,15 @@ intelReadPixels(struct gl_context * ctx,
 
    fallback_debug("%s: fallback to swrast\n", __FUNCTION__);
 
-   /* Update Mesa state before calling down into _swrast_ReadPixels, as
-    * the spans code requires the computed buffer states to be up to date,
-    * but _swrast_ReadPixels only updates Mesa state after setting up
-    * the spans code.
+   /* Update Mesa state before calling _mesa_readpixels().
+    * XXX this may not be needed since ReadPixels no longer uses the
+    * span code.
     */
 
    if (ctx->NewState)
       _mesa_update_state(ctx);
 
-   _swrast_ReadPixels(ctx, x, y, width, height, format, type, pack, pixels);
+   _mesa_readpixels(ctx, x, y, width, height, format, type, pack, pixels);
 
    /* There's an intel_prepare_render() call in intelSpanRenderStart(). */
    intel->front_buffer_dirty = dirty;

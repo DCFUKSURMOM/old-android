@@ -150,6 +150,11 @@ def is_format_pure_signed(format):
 def native_type(format):
     '''Get the native appropriate for a format.'''
 
+    if format.name == 'PIPE_FORMAT_R11G11B10_FLOAT':
+        return 'uint32_t'
+    if format.name == 'PIPE_FORMAT_R9G9B9E5_FLOAT':
+        return 'uint32_t'
+
     if format.layout == PLAIN:
         if not format.is_array():
             # For arithmetic pixel formats return the integer type that matches the whole pixel
@@ -653,7 +658,7 @@ def generate_format_fetch(format, dst_channel, dst_native_type, dst_suffix):
 
 
 def is_format_hand_written(format):
-    return format.layout in ('s3tc', 'rgtc', 'subsampled', 'other') or format.colorspace == ZS
+    return format.layout in ('s3tc', 'rgtc', 'etc', 'subsampled', 'other') or format.colorspace == ZS
 
 
 def generate(formats):
@@ -681,6 +686,7 @@ def generate(formats):
 
                 generate_format_unpack(format, channel, native_type, suffix)
                 generate_format_pack(format, channel, native_type, suffix)
+                generate_format_fetch(format, channel, native_type, suffix)
 
                 channel = Channel(SIGNED, False, True, 32)
                 native_type = 'int'
@@ -694,6 +700,7 @@ def generate(formats):
 
                 generate_format_unpack(format, channel, native_type, suffix)
                 generate_format_pack(format, channel, native_type, suffix)   
+                generate_format_fetch(format, channel, native_type, suffix)
 
                 native_type = 'unsigned'
                 suffix = 'unsigned'
