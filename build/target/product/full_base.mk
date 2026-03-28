@@ -24,7 +24,8 @@ PRODUCT_PACKAGES := \
     VoiceDialer \
     libWnnEngDic \
     libWnnJpnDic \
-    libwnndict
+    libwnndict \
+    Term
 
 # Additional settings used in all AOSP builds
 PRODUCT_PROPERTY_OVERRIDES := \
