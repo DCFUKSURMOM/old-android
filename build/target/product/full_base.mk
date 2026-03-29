@@ -25,7 +25,8 @@ PRODUCT_PACKAGES := \
     libWnnEngDic \
     libWnnJpnDic \
     libwnndict \
-    Term
+    AndroidTerm \
+    GhostCommander
 
 # Additional settings used in all AOSP builds
 PRODUCT_PROPERTY_OVERRIDES := \
