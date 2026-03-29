@@ -773,13 +773,12 @@ systemimage-nodeps snod: $(filter-out systemimage-nodeps snod,$(MAKECMDGOALS)) \
 ## system tarball
 define build-systemtarball-target
     $(call pretty,"Target system fs tarball: $(INSTALLED_SYSTEMTARBALL_TARGET)")
-    $(MKTARBALL) $(FS_GET_STATS) \
-		$(PRODUCT_OUT) system $(PRIVATE_SYSTEM_TAR) \
-		$(INSTALLED_SYSTEMTARBALL_TARGET)
+	@mkdir -p $(dir $(INSTALLED_SYSTEMTARBALL_TARGET))
+	tar --numeric-owner --owner=0 --group=0 -C $(PRODUCT_OUT) -cvf $(INSTALLED_SYSTEMTARBALL_TARGET) system
 endef
 
 system_tar := $(PRODUCT_OUT)/system.tar
-INSTALLED_SYSTEMTARBALL_TARGET := $(system_tar).bz2
+INSTALLED_SYSTEMTARBALL_TARGET := $(system_tar)
 $(INSTALLED_SYSTEMTARBALL_TARGET): PRIVATE_SYSTEM_TAR := $(system_tar)
 $(INSTALLED_SYSTEMTARBALL_TARGET): $(FS_GET_STATS) $(INTERNAL_SYSTEMIMAGE_FILES)
 	$(build-systemtarball-target)
