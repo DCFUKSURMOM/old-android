@@ -35,4 +35,4 @@ WITH_DEXPREOPT := true
 endif
 
 # Build OpenGLES emulation guest and host libraries
-BUILD_EMULATOR_OPENGL := true
+BUILD_EMULATOR_OPENGL := false
