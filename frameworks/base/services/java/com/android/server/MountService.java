@@ -1213,7 +1213,18 @@ class MountService extends IMountService.Stub
     /**
      * @return state of the volume at the specified mount point
      */
+    /**
+     * @return state of the volume at the specified mount point
+     */
     public String getVolumeState(String mountPoint) {
+        // Force SD card always present & mounted
+        // This makes MountService (and everything that talks to it) believe
+        // /mnt/sdcard is fully usable even with no real hardware SD card.
+        if ("/mnt/sdcard".equals(mountPoint) || "/sdcard".equals(mountPoint)) {
+            return Environment.MEDIA_MOUNTED;
+        }
+        // =======================================================================
+
         /*
          * XXX: Until we have multiple volume discovery, just hardwire
          * this to /sdcard
@@ -1225,7 +1236,6 @@ class MountService extends IMountService.Stub
 
         return mLegacyState;
     }
-
     public int mountVolume(String path) {
         validatePermission(android.Manifest.permission.MOUNT_UNMOUNT_FILESYSTEMS);
 

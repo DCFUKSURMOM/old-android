@@ -381,15 +381,8 @@ public class Environment {
      * <p>See {@link #getExternalStorageDirectory()} for more information.
      */
     public static String getExternalStorageState() {
-        try {
-            if (mMntSvc == null) {
-                mMntSvc = IMountService.Stub.asInterface(ServiceManager
-                                                         .getService("mount"));
-            }
-            return mMntSvc.getVolumeState(getExternalStorageDirectory().toString());
-        } catch (Exception rex) {
-            return Environment.MEDIA_REMOVED;
-        }
+        // Always pretend SD card is mounted
+        return Environment.MEDIA_MOUNTED;
     }
 
     /**
@@ -401,8 +394,8 @@ public class Environment {
      * <p>See {@link #getExternalStorageDirectory()} for more information.
      */
     public static boolean isExternalStorageRemovable() {
-        return Resources.getSystem().getBoolean(
-                com.android.internal.R.bool.config_externalStorageRemovable);
+        // Tell apps the card is removable
+        return true;
     }
 
     static File getDirectory(String variableName, String defaultPath) {

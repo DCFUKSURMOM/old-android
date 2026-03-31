@@ -31,7 +31,9 @@ loglevel 0
 
 # create mountpoints
     mkdir /mnt 0775 root system
-    mkdir /mnt/sdcard 0000 system system
+    mkdir /mnt/sdcard 0775 system sdcard_rw
+    mkdir /mnt/sdcard/DCIM 0775 system sdcard_rw
+    mkdir /mnt/sdcard/DCIM/Camera 0775 system sdcard_rw
 
 # Create cgroup mount point for cpu accounting
     mkdir /acct
@@ -429,3 +431,12 @@ service dmesg-sh /system/bin/dmesg.sh
     disabled
 service logcat-sh /system/bin/logcat.sh
     disabled
+
+service mediascan /system/bin/sh /mediascan.sh
+    class main
+    user root
+    group root
+    oneshot
+
+on property:sys.boot_completed=1
+    start mediascan
