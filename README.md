@@ -10,7 +10,4 @@ The lock screen has been disabled to help with testing, as the software renderin
 
 The plan is to eventually have proper acceleration with Mesa, and fall back to Mesa's softpipe (or llvmpipe if I get llvm to work), both of which are faster than swrast.
 
-The AOSP terminal app has been enabled, and has some patches from CyanogenMod, but it doesnt show up in the app launcher, idk how to fix that.
-
-[This App](https://github.com/jackpal/Android-Terminal-Emulator) works ok for the terminal, but its ofc slow like everything else with software rendering.
-
+The Ghost Commander file manager and a [working terminal app](https://github.com/iDroid-Project/platform_packages_apps_AndroidTerm) have been included
