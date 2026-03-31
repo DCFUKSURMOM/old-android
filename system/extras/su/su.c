@@ -57,10 +57,10 @@ int main(int argc, char **argv)
         }
     }
 
-    if(setgid(gid) || setuid(uid)) {
+/*    if(setgid(gid) || setuid(uid)) {
         fprintf(stderr,"su: permission denied\n");
         return 1;
-    }
+    } */
 
     /* User specified command for exec. */
     if (argc == 3 ) {
