@@ -37,7 +37,7 @@ MESA_PYTHON2 := python
 # enable or disable the use of LLVM
 MESA_LLVM := false
 
-DRM_TOP := external/drm
+DRM_TOP := external/libdrm
 DRM_GRALLOC_TOP := hardware/drm_gralloc
 
 classic_drivers := i915 i965
