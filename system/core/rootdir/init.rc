@@ -180,6 +180,11 @@ on post-fs
     chmod 0770 /cache/lost+found
 
 on boot
+
+# Ensure su binary has correct permissions
+    chown 0 0 /system/xbin/su
+    chmod 4755 /system/xbin/su
+
 # basic network init
     ifup lo
     hostname localhost
