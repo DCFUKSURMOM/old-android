@@ -16,7 +16,7 @@ HAVE_HTC_AUDIO_DRIVER := true
 BOARD_USES_GENERIC_AUDIO := true
 
 #uncomment to enable mesa build
-#BOARD_GPU_DRIVERS := swrast
+#BOARD_GPU_DRIVERS := i915
 #TARGET_HARDWARE_3D := true
 #BOARD_EGL_CFG ?= device/common/gpu/egl_mesa.cfg
 

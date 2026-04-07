@@ -13,5 +13,5 @@ PRODUCT_PACKAGES := \
     gralloc.$(TARGET_PRODUCT)
 
 # DRI drivers
-PRODUCT_PACKAGES += swrast_dri
+PRODUCT_PACKAGES += i915_dri
 
